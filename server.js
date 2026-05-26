@@ -3,13 +3,9 @@ const express = require('express');
 const cors = require('cors');
 const app = express();
 
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
-}));
+app.use(cors({ origin: '*', credentials: false }));
 app.use(express.json());
 
-// Rutas
 app.use('/api/auth',      require('./routes/auth'));
 app.use('/api/muebles',   require('./routes/muebles'));
 app.use('/api/reservas',  require('./routes/reservas'));
