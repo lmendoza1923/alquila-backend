@@ -15,4 +15,4 @@ app.use('/api/admin',     require('./routes/admin'));
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`Servidor corriendo en puerto ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Servidor corriendo en puerto ${PORT}`));
