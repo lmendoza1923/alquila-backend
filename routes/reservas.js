@@ -57,17 +57,9 @@ router.post('/', async (req, res) => {
       if (!mueble.rows.length) throw new Error(`Mueble ${item.mueble_id} no encontrado`);
 
       const m = mueble.rows[0];
-      // Verificar disponibilidad
-      const ocupado = await client.query(`
-        SELECT COALESCE(SUM(ri.cantidad),0) AS total
-        FROM reserva_items ri JOIN reservas r ON r.id=ri.reserva_id
-        WHERE ri.mueble_id=$1 AND r.estado NOT IN ('cancelada')
-          AND NOT (r.fecha_fin < $2 OR r.fecha_inicio > $3)
-      `, [item.mueble_id, fecha_inicio, fecha_fin]);
-
-      const disponible = m.stock - parseInt(ocupado.rows[0].total);
-      if (disponible < item.cantidad)
-        throw new Error(`Solo hay ${disponible} unidades disponibles de "${m.nombre}"`);
+      // Verificar disponibilidad física directa
+      if (m.stock < item.cantidad)
+        throw new Error(`Solo hay ${m.stock} unidades disponibles de "${m.nombre}"`);
 
       let precio = m.precio_dia;
       if (dias >= 30 && m.precio_mes) precio = m.precio_mes / 30;
@@ -89,6 +81,11 @@ router.post('/', async (req, res) => {
       await client.query(
         'INSERT INTO reserva_items (reserva_id, mueble_id, cantidad, precio_unitario, subtotal) VALUES ($1,$2,$3,$4,$5)',
         [reserva.id, item.mueble_id, item.cantidad, item.precio_unitario, item.subtotal]
+      );
+      // Decrementar stock físico en la tabla muebles
+      await client.query(
+        'UPDATE muebles SET stock = stock - $1 WHERE id = $2',
+        [item.cantidad, item.mueble_id]
       );
     }
 
@@ -130,14 +127,53 @@ router.get('/', auth, async (req, res) => {
 
 // Cambiar estado de reserva (solo admin)
 router.patch('/:id/estado', admin, async (req, res) => {
+  const client = await db.connect();
   try {
+    await client.query('BEGIN');
     const { estado } = req.body;
     const estados = ['pendiente','confirmada','activa','completada','cancelada'];
-    if (!estados.includes(estado)) return res.status(400).json({ error: 'Estado inválido' });
-    const result = await db.query('UPDATE reservas SET estado=$1 WHERE id=$2 RETURNING *', [estado, req.params.id]);
-    res.json(result.rows[0]);
+    if (!estados.includes(estado)) {
+      client.release();
+      return res.status(400).json({ error: 'Estado inválido' });
+    }
+
+    // Obtener estado anterior de la reserva
+    const reservaRes = await client.query('SELECT estado FROM reservas WHERE id = $1', [req.params.id]);
+    if (!reservaRes.rows.length) {
+      client.release();
+      return res.status(404).json({ error: 'Reserva no encontrada' });
+    }
+    const estadoAnterior = reservaRes.rows[0].estado;
+
+    // Actualizar el estado de la reserva
+    const result = await client.query('UPDATE reservas SET estado=$1 WHERE id=$2 RETURNING *', [estado, req.params.id]);
+    const reservaActualizada = result.rows[0];
+
+    const vigenteAnterior = ['pendiente', 'confirmada', 'activa'].includes(estadoAnterior);
+    const vigenteNuevo = ['pendiente', 'confirmada', 'activa'].includes(estado);
+
+    // Si cambió la vigencia, actualizar stock de muebles
+    if (vigenteAnterior !== vigenteNuevo) {
+      const itemsRes = await client.query('SELECT mueble_id, cantidad FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
+      
+      for (const item of itemsRes.rows) {
+        if (vigenteAnterior && !vigenteNuevo) {
+          // De vigente a no-vigente (completada o cancelada) -> devolver al stock
+          await client.query('UPDATE muebles SET stock = stock + $1 WHERE id = $2', [item.cantidad, item.mueble_id]);
+        } else if (!vigenteAnterior && vigenteNuevo) {
+          // De no-vigente a vigente -> restar del stock
+          await client.query('UPDATE muebles SET stock = stock - $1 WHERE id = $2', [item.cantidad, item.mueble_id]);
+        }
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json(reservaActualizada);
   } catch (err) {
+    await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 

@@ -48,17 +48,7 @@ router.get('/:id/disponibilidad', async (req, res) => {
     if (!mueble.rows.length) return res.status(404).json({ error: 'Mueble no encontrado' });
 
     const stock = mueble.rows[0].stock;
-    const reservado = await db.query(`
-      SELECT COALESCE(SUM(ri.cantidad),0) AS total
-      FROM reserva_items ri
-      JOIN reservas r ON r.id = ri.reserva_id
-      WHERE ri.mueble_id = $1
-        AND r.estado NOT IN ('cancelada')
-        AND NOT (r.fecha_fin < $2 OR r.fecha_inicio > $3)
-    `, [req.params.id, fecha_inicio, fecha_fin]);
-
-    const ocupado = parseInt(reservado.rows[0].total);
-    res.json({ disponible: stock - ocupado, stock });
+    res.json({ disponible: stock, stock });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
