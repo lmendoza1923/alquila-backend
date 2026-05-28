@@ -177,4 +177,67 @@ router.patch('/:id/estado', admin, async (req, res) => {
   }
 });
 
+// Editar reserva completa (solo admin)
+router.put('/:id', admin, async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const {
+      fecha_inicio, fecha_fin,
+      nombre_cliente, email_cliente, telefono_cliente,
+      direccion_entrega, notas, estado, total
+    } = req.body;
+
+    const estados = ['pendiente','confirmada','activa','completada','cancelada'];
+    if (estado && !estados.includes(estado)) {
+      client.release();
+      return res.status(400).json({ error: 'Estado inválido' });
+    }
+
+    // Obtener estado anterior de la reserva
+    const reservaRes = await client.query('SELECT estado FROM reservas WHERE id = $1', [req.params.id]);
+    if (!reservaRes.rows.length) {
+      client.release();
+      return res.status(404).json({ error: 'Reserva no encontrada' });
+    }
+    const estadoAnterior = reservaRes.rows[0].estado;
+
+    // Actualizar la reserva
+    const result = await client.query(
+      `UPDATE reservas 
+       SET fecha_inicio=$1, fecha_fin=$2, nombre_cliente=$3, email_cliente=$4, 
+           telefono_cliente=$5, direccion_entrega=$6, notas=$7, estado=$8, total=$9
+       WHERE id=$10 RETURNING *`,
+      [fecha_inicio, fecha_fin, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, estado, total, req.params.id]
+    );
+    const reservaActualizada = result.rows[0];
+
+    const vigenteAnterior = ['pendiente', 'confirmada', 'activa'].includes(estadoAnterior);
+    const vigenteNuevo = ['pendiente', 'confirmada', 'activa'].includes(estado);
+
+    // Si cambió la vigencia, actualizar stock de muebles
+    if (vigenteAnterior !== vigenteNuevo) {
+      const itemsRes = await client.query('SELECT mueble_id, cantidad FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
+      
+      for (const item of itemsRes.rows) {
+        if (vigenteAnterior && !vigenteNuevo) {
+          // De vigente a no-vigente (completada o cancelada) -> devolver al stock
+          await client.query('UPDATE muebles SET stock = stock + $1 WHERE id = $2', [item.cantidad, item.mueble_id]);
+        } else if (!vigenteAnterior && vigenteNuevo) {
+          // De no-vigente a vigente -> restar del stock
+          await client.query('UPDATE muebles SET stock = stock - $1 WHERE id = $2', [item.cantidad, item.mueble_id]);
+        }
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json(reservaActualizada);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;
