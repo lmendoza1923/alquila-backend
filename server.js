@@ -11,6 +11,7 @@ app.use('/api/muebles',   require('./routes/muebles'));
 app.use('/api/reservas',  require('./routes/reservas'));
 app.use('/api/categorias',require('./routes/categorias'));
 app.use('/api/admin',     require('./routes/admin'));
+app.use('/api/pagos',     require('./routes/pagos'));   // ← NUEVO
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 

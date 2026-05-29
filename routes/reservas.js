@@ -240,4 +240,45 @@ router.put('/:id', admin, async (req, res) => {
   }
 });
 
+// === AGREGAR ESTE BLOQUE AL FINAL DE backend/routes/reservas.js (antes de module.exports) ===
+
+// Eliminar reserva (solo admin)
+router.delete('/:id', admin, async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Obtener estado actual para saber si hay que devolver stock
+    const reservaRes = await client.query('SELECT estado FROM reservas WHERE id = $1', [req.params.id]);
+    if (!reservaRes.rows.length) {
+      client.release();
+      return res.status(404).json({ error: 'Reserva no encontrada' });
+    }
+
+    const estadoActual = reservaRes.rows[0].estado;
+    const esVigente = ['pendiente', 'confirmada', 'activa'].includes(estadoActual);
+
+    // Si la reserva es vigente, devolver el stock
+    if (esVigente) {
+      const itemsRes = await client.query('SELECT mueble_id, cantidad FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
+      for (const item of itemsRes.rows) {
+        await client.query('UPDATE muebles SET stock = stock + $1 WHERE id = $2', [item.cantidad, item.mueble_id]);
+      }
+    }
+
+    // Eliminar items, pagos y luego la reserva
+    await client.query('DELETE FROM pagos WHERE reserva_id = $1', [req.params.id]);
+    await client.query('DELETE FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
+    await client.query('DELETE FROM reservas WHERE id = $1', [req.params.id]);
+
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;
