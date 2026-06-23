@@ -69,14 +69,16 @@ router.post('/', admin, async (req, res) => {
     await client.query('BEGIN');
     const { nombre, descripcion, precio_dia, precio_semana, precio_mes, items } = req.body;
 
-    if (!nombre || !precio_dia || isNaN(precio_dia)) {
-      return res.status(400).json({ error: 'Nombre y precio por día son obligatorios' });
+    if (!nombre) {
+      return res.status(400).json({ error: 'El nombre es obligatorio' });
     }
+
+    const pDia = (precio_dia !== undefined && precio_dia !== null && precio_dia !== '' && !isNaN(precio_dia)) ? parseFloat(precio_dia) : 0.00;
 
     const comboRes = await client.query(
       `INSERT INTO combos (nombre, descripcion, precio_dia, precio_semana, precio_mes)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [nombre, descripcion, parseFloat(precio_dia), precio_semana ? parseFloat(precio_semana) : null, precio_mes ? parseFloat(precio_mes) : null]
+      [nombre, descripcion, pDia, null, null]
     );
     const combo = comboRes.rows[0];
 
@@ -109,17 +111,18 @@ router.put('/:id', admin, async (req, res) => {
     await client.query('BEGIN');
     const { nombre, descripcion, precio_dia, precio_semana, precio_mes, items, activo } = req.body;
 
-    if (!nombre || !precio_dia || isNaN(precio_dia)) {
-      return res.status(400).json({ error: 'Nombre y precio por día son obligatorios' });
+    if (!nombre) {
+      return res.status(400).json({ error: 'El nombre es obligatorio' });
     }
 
+    const pDia = (precio_dia !== undefined && precio_dia !== null && precio_dia !== '' && !isNaN(precio_dia)) ? parseFloat(precio_dia) : 0.00;
     const isActivo = activo !== undefined ? activo : true;
 
     const comboRes = await client.query(
       `UPDATE combos 
        SET nombre = $1, descripcion = $2, precio_dia = $3, precio_semana = $4, precio_mes = $5, activo = $6
        WHERE id = $7 RETURNING *`,
-      [nombre, descripcion, parseFloat(precio_dia), precio_semana ? parseFloat(precio_semana) : null, precio_mes ? parseFloat(precio_mes) : null, isActivo, req.params.id]
+      [nombre, descripcion, pDia, null, null, isActivo, req.params.id]
     );
 
     if (!comboRes.rows.length) {

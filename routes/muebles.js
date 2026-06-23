@@ -57,11 +57,14 @@ router.get('/:id/disponibilidad', async (req, res) => {
 // CRUD admin
 router.post('/', admin, async (req, res) => {
   try {
-    const { nombre, descripcion, categoria_id, precio_dia, precio_semana, precio_mes, stock, imagenes } = req.body;
+    const { nombre, descripcion, categoria_id, precio_dia, stock, imagenes } = req.body;
+    const pDia = (precio_dia !== undefined && precio_dia !== null && precio_dia !== '' && !isNaN(precio_dia)) ? parseFloat(precio_dia) : 0.00;
+    const catId = (categoria_id !== undefined && categoria_id !== null && categoria_id !== '') ? parseInt(categoria_id) : null;
+    
     const result = await db.query(
       `INSERT INTO muebles (nombre, descripcion, categoria_id, precio_dia, precio_semana, precio_mes, stock, imagenes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [nombre, descripcion, categoria_id, precio_dia, precio_semana, precio_mes, stock || 1, imagenes || []]
+      [nombre, descripcion, catId, pDia, null, null, stock || 1, imagenes || []]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -71,12 +74,15 @@ router.post('/', admin, async (req, res) => {
 
 router.put('/:id', admin, async (req, res) => {
   try {
-    const { nombre, descripcion, categoria_id, precio_dia, precio_semana, precio_mes, stock, imagenes, activo } = req.body;
+    const { nombre, descripcion, categoria_id, precio_dia, stock, imagenes, activo } = req.body;
+    const pDia = (precio_dia !== undefined && precio_dia !== null && precio_dia !== '' && !isNaN(precio_dia)) ? parseFloat(precio_dia) : 0.00;
+    const catId = (categoria_id !== undefined && categoria_id !== null && categoria_id !== '') ? parseInt(categoria_id) : null;
+
     const result = await db.query(
       `UPDATE muebles SET nombre=$1, descripcion=$2, categoria_id=$3, precio_dia=$4,
        precio_semana=$5, precio_mes=$6, stock=$7, imagenes=$8, activo=$9
        WHERE id=$10 RETURNING *`,
-      [nombre, descripcion, categoria_id, precio_dia, precio_semana, precio_mes, stock, imagenes, activo, req.params.id]
+      [nombre, descripcion, catId, pDia, null, null, stock, imagenes, activo, req.params.id]
     );
     res.json(result.rows[0]);
   } catch (err) {
