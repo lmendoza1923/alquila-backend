@@ -136,6 +136,19 @@ router.post('/', async (req, res) => {
           subtotal,
           cantidad: item.cantidad
         });
+      } else if (item.nombre) {
+        // Es un servicio manual
+        const precio = parseFloat(item.precio_unitario || 0);
+        const subtotal = parseFloat((precio * item.cantidad).toFixed(2));
+        total += subtotal;
+        itemsDetalle.push({
+          combo_id: null,
+          mueble_id: null,
+          nombre: item.nombre,
+          precio_unitario: precio,
+          subtotal,
+          cantidad: item.cantidad
+        });
       }
     }
 
@@ -148,8 +161,8 @@ router.post('/', async (req, res) => {
 
     for (const item of itemsDetalle) {
       await client.query(
-        'INSERT INTO reserva_items (reserva_id, mueble_id, combo_id, cantidad, precio_unitario, subtotal) VALUES ($1,$2,$3,$4,$5,$6)',
-        [reserva.id, item.mueble_id, item.combo_id, item.cantidad, item.precio_unitario, item.subtotal]
+        'INSERT INTO reserva_items (reserva_id, mueble_id, combo_id, cantidad, precio_unitario, subtotal, nombre) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [reserva.id, item.mueble_id, item.combo_id, item.cantidad, item.precio_unitario, item.subtotal, item.nombre]
       );
       // Decrementar stock físico de componentes / muebles individuales
       await actualizarStockItem(client, item, 'restar');
@@ -179,7 +192,7 @@ router.get('/', auth, async (req, res) => {
                    json_build_object(
                      'mueble_id', ri.mueble_id,
                      'combo_id', ri.combo_id,
-                     'mueble', COALESCE(m.nombre, c.nombre),
+                     'mueble', COALESCE(ri.nombre, m.nombre, c.nombre),
                      'cantidad', ri.cantidad,
                      'subtotal', ri.subtotal
                    )
@@ -201,7 +214,7 @@ router.get('/', auth, async (req, res) => {
                    json_build_object(
                      'mueble_id', ri.mueble_id,
                      'combo_id', ri.combo_id,
-                     'mueble', COALESCE(m.nombre, c.nombre),
+                     'mueble', COALESCE(ri.nombre, m.nombre, c.nombre),
                      'cantidad', ri.cantidad,
                      'subtotal', ri.subtotal
                    )
@@ -418,14 +431,26 @@ router.put('/:id/items', admin, async (req, res) => {
           subtotal,
           cantidad: item.cantidad
         });
+      } else if (item.nombre) {
+        const precio = parseFloat(item.precio_unitario || 0);
+        const subtotal = parseFloat((precio * item.cantidad).toFixed(2));
+        nuevoTotal += subtotal;
+        itemsProcesados.push({
+          combo_id: null,
+          mueble_id: null,
+          nombre: item.nombre,
+          precio_unitario: precio,
+          subtotal,
+          cantidad: item.cantidad
+        });
       }
     }
 
     // 4. Registrar nuevos items e impactar stock
     for (const item of itemsProcesados) {
       await client.query(
-        'INSERT INTO reserva_items (reserva_id, mueble_id, combo_id, cantidad, precio_unitario, subtotal) VALUES ($1,$2,$3,$4,$5,$6)',
-        [reservaId, item.mueble_id, item.combo_id, item.cantidad, item.precio_unitario, item.subtotal]
+        'INSERT INTO reserva_items (reserva_id, mueble_id, combo_id, cantidad, precio_unitario, subtotal, nombre) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [reservaId, item.mueble_id, item.combo_id, item.cantidad, item.precio_unitario, item.subtotal, item.nombre]
       );
       if (esVigente) {
         await actualizarStockItem(client, item, 'restar');
