@@ -11,6 +11,7 @@ const mailer = nodemailer.createTransport({
 });
 
 async function enviarConfirmacion(reserva, items) {
+  if (!reserva.email_cliente) return;
   const itemsHtml = items.map(i =>
     `<tr><td>${i.nombre}</td><td>${i.cantidad}</td><td>$${i.precio_unitario}</td><td>$${i.subtotal}</td></tr>`
   ).join('');
