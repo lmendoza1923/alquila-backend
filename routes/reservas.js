@@ -55,6 +55,43 @@ async function actualizarStockItem(client, item, accion) {
   }
 }
 
+// Función para completar automáticamente reservas que ya pasaron su fecha de fin
+async function autoCompletarReservasExpiradas() {
+  const client = await db.connect();
+  try {
+    const query = `
+      SELECT id 
+      FROM reservas 
+      WHERE fecha_fin < CURRENT_DATE 
+        AND estado IN ('pendiente', 'confirmada', 'activa')
+    `;
+    const res = await client.query(query);
+    for (const r of res.rows) {
+      try {
+        await client.query('BEGIN');
+        await client.query("UPDATE reservas SET estado = 'completada' WHERE id = $1", [r.id]);
+        const itemsRes = await client.query(
+          "SELECT mueble_id, combo_id, cantidad FROM reserva_items WHERE reserva_id = $1", 
+          [r.id]
+        );
+        for (const item of itemsRes.rows) {
+          await actualizarStockItem(client, item, 'sumar');
+        }
+        await client.query('COMMIT');
+        console.log(`[Auto-completar] Reserva ${r.id} completada automáticamente (fecha vencida).`);
+      } catch (err) {
+        await client.query('ROLLBACK');
+        console.error(`[Auto-completar] Error en reserva ${r.id}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('[Auto-completar] Error general:', err.message);
+  } finally {
+    client.release();
+  }
+}
+router.autoCompletarReservasExpiradas = autoCompletarReservasExpiradas;
+
 // Crear reserva (público o autenticado)
 router.post('/', async (req, res) => {
   const client = await db.connect();
@@ -154,9 +191,9 @@ router.post('/', async (req, res) => {
     }
 
     const reservaResult = await client.query(
-      `INSERT INTO reservas (fecha_inicio, fecha_fin, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [fecha_inicio, fecha_fin, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total.toFixed(2)]
+      `INSERT INTO reservas (fecha_inicio, fecha_fin, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total, estado)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [fecha_inicio, fecha_fin, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total.toFixed(2), 'activa']
     );
     const reserva = reservaResult.rows[0];
 
@@ -181,9 +218,9 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Listar reservas (admin ve todas con detalles, cliente ve las suyas)
 router.get('/', auth, async (req, res) => {
   try {
+    await autoCompletarReservasExpiradas();
     let query, params;
     if (req.user.rol === 'admin') {
       query = `

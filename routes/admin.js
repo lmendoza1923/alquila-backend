@@ -1,10 +1,12 @@
 const router = require('express').Router();
 const db = require('../db');
 const { admin } = require('../middleware/auth');
+const reservasRouter = require('./reservas');
 
 // Dashboard stats
 router.get('/stats', admin, async (req, res) => {
   try {
+    await reservasRouter.autoCompletarReservasExpiradas();
     const [reservas, ingresos, muebles, pendientes] = await Promise.all([
       db.query("SELECT COUNT(*) FROM reservas WHERE estado != 'cancelada'"),
       db.query("SELECT COALESCE(SUM(total),0) AS total FROM reservas WHERE estado IN ('confirmada','activa','completada')"),
@@ -26,6 +28,7 @@ router.get('/stats', admin, async (req, res) => {
 // Reservas recientes
 router.get('/reservas-recientes', admin, async (req, res) => {
   try {
+    await reservasRouter.autoCompletarReservasExpiradas();
     const result = await db.query(
       `SELECT id, nombre_cliente, email_cliente, fecha_inicio, fecha_fin, estado, total, creado_en
        FROM reservas ORDER BY creado_en DESC LIMIT 20`
@@ -39,6 +42,7 @@ router.get('/reservas-recientes', admin, async (req, res) => {
 // Reportes y estadísticas mensuales
 router.get('/reportes', admin, async (req, res) => {
   try {
+    await reservasRouter.autoCompletarReservasExpiradas();
     const mes = parseInt(req.query.mes) || new Date().getMonth() + 1;
     const anio = parseInt(req.query.anio) || new Date().getFullYear();
 
