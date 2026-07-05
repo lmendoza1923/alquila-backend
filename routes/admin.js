@@ -39,38 +39,51 @@ router.get('/reservas-recientes', admin, async (req, res) => {
   }
 });
 
-// Reportes y estadísticas mensuales
+// Reportes y estadísticas mensuales/personalizados
 router.get('/reportes', admin, async (req, res) => {
   try {
     await reservasRouter.autoCompletarReservasExpiradas();
-    const mes = parseInt(req.query.mes) || new Date().getMonth() + 1;
-    const anio = parseInt(req.query.anio) || new Date().getFullYear();
+    
+    const tipo = req.query.tipo || 'mes';
+    let fechaInicio, fechaFin;
 
-    // Query 1: Total de reservas en el mes filtrado
+    if (tipo === 'personalizado') {
+      fechaInicio = req.query.fechaInicio;
+      fechaFin = req.query.fechaFin;
+      if (!fechaInicio || !fechaFin) {
+        return res.status(400).json({ error: 'Faltan parámetros de fechaInicio o fechaFin' });
+      }
+    } else {
+      const mes = parseInt(req.query.mes) || new Date().getMonth() + 1;
+      const anio = parseInt(req.query.anio) || new Date().getFullYear();
+      const mesStr = String(mes).padStart(2, '0');
+      fechaInicio = `${anio}-${mesStr}-01`;
+      const ultimoDia = new Date(anio, mes, 0).getDate();
+      fechaFin = `${anio}-${mesStr}-${String(ultimoDia).padStart(2, '0')}`;
+    }
+
+    // Query 1: Total de reservas en el rango de fechas
     const queryReservas = `
       SELECT COUNT(*) AS count 
       FROM reservas 
-      WHERE EXTRACT(MONTH FROM creado_en) = $1 
-        AND EXTRACT(YEAR FROM creado_en) = $2 
+      WHERE creado_en >= $1::date AND creado_en < $2::date + 1 
         AND estado != 'cancelada'
     `;
 
-    // Query 2: Total de ingresos (pagos registrados) en el mes filtrado
+    // Query 2: Total de ingresos (pagos registrados) en el rango de fechas
     const queryIngresos = `
       SELECT COALESCE(SUM(monto), 0) AS total 
       FROM pagos 
-      WHERE EXTRACT(MONTH FROM creado_en) = $1 
-        AND EXTRACT(YEAR FROM creado_en) = $2
+      WHERE creado_en >= $1::date AND creado_en < $2::date + 1
     `;
 
-    // Query 3: Total de artículos (muebles físicos) alquilados en el mes
+    // Query 3: Total de artículos (muebles físicos) alquilados en el rango de fechas
     // Consideramos tanto alquileres individuales como componentes de combos
     const queryArticulosMuebles = `
       SELECT COALESCE(SUM(ri.cantidad), 0) AS total
       FROM reserva_items ri
       JOIN reservas r ON r.id = ri.reserva_id
-      WHERE EXTRACT(MONTH FROM r.creado_en) = $1 
-        AND EXTRACT(YEAR FROM r.creado_en) = $2 
+      WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1 
         AND r.estado != 'cancelada' 
         AND ri.mueble_id IS NOT NULL
     `;
@@ -80,20 +93,18 @@ router.get('/reportes', admin, async (req, res) => {
       FROM reserva_items ri
       JOIN reservas r ON r.id = ri.reserva_id
       JOIN combo_items ci ON ci.combo_id = ri.combo_id
-      WHERE EXTRACT(MONTH FROM r.creado_en) = $1 
-        AND EXTRACT(YEAR FROM r.creado_en) = $2 
+      WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1 
         AND r.estado != 'cancelada' 
         AND ri.combo_id IS NOT NULL
     `;
 
-    // Query 4: Top de reservas (muebles más alquilados)
+    // Query 4: Top de reservas (muebles más alquilados) en el rango de fechas
     const queryTopMuebles = `
       WITH rentals AS (
         SELECT ri.mueble_id, SUM(ri.cantidad) AS total
         FROM reserva_items ri
         JOIN reservas r ON r.id = ri.reserva_id
-        WHERE EXTRACT(MONTH FROM r.creado_en) = $1 
-          AND EXTRACT(YEAR FROM r.creado_en) = $2 
+        WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1 
           AND r.estado != 'cancelada'
           AND ri.mueble_id IS NOT NULL
         GROUP BY ri.mueble_id
@@ -104,8 +115,7 @@ router.get('/reportes', admin, async (req, res) => {
         FROM reserva_items ri
         JOIN reservas r ON r.id = ri.reserva_id
         JOIN combo_items ci ON ci.combo_id = ri.combo_id
-        WHERE EXTRACT(MONTH FROM r.creado_en) = $1 
-          AND EXTRACT(YEAR FROM r.creado_en) = $2 
+        WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1 
           AND r.estado != 'cancelada'
           AND ri.combo_id IS NOT NULL
         GROUP BY ci.mueble_id
@@ -118,14 +128,13 @@ router.get('/reportes', admin, async (req, res) => {
       LIMIT 5
     `;
 
-    // Query 5: Top de combos
+    // Query 5: Top de combos en el rango de fechas
     const queryTopCombos = `
       SELECT c.nombre, COALESCE(SUM(ri.cantidad), 0) AS total_alquilado
       FROM reserva_items ri
       JOIN reservas r ON r.id = ri.reserva_id
       JOIN combos c ON c.id = ri.combo_id
-      WHERE EXTRACT(MONTH FROM r.creado_en) = $1 
-        AND EXTRACT(YEAR FROM r.creado_en) = $2 
+      WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1 
         AND r.estado != 'cancelada'
         AND ri.combo_id IS NOT NULL
       GROUP BY c.id, c.nombre
@@ -133,17 +142,16 @@ router.get('/reportes', admin, async (req, res) => {
       LIMIT 5
     `;
 
-    // Query 6: Ganancias diarias del mes filtrado (para la gráfica de ganancias del mes)
+    // Query 6: Ganancias diarias agrupadas por fecha exacta YYYY-MM-DD
     const queryGananciasDiarias = `
-      SELECT EXTRACT(DAY FROM creado_en)::INTEGER AS dia, COALESCE(SUM(monto), 0) AS total
+      SELECT TO_CHAR(creado_en, 'YYYY-MM-DD') AS fecha, COALESCE(SUM(monto), 0) AS total
       FROM pagos
-      WHERE EXTRACT(MONTH FROM creado_en) = $1 
-        AND EXTRACT(YEAR FROM creado_en) = $2
-      GROUP BY dia
-      ORDER BY dia
+      WHERE creado_en >= $1::date AND creado_en < $2::date + 1
+      GROUP BY TO_CHAR(creado_en, 'YYYY-MM-DD')
+      ORDER BY fecha
     `;
 
-    // Query 7: Ganancias generales de todos los meses (para la gráfica general)
+    // Query 7: Ganancias generales de todos los meses (para la gráfica histórica)
     const queryGananciasMensualesGenerales = `
       SELECT 
         EXTRACT(YEAR FROM creado_en)::INTEGER AS anio, 
@@ -164,13 +172,13 @@ router.get('/reportes', admin, async (req, res) => {
       resGananciasDiarias,
       resGananciasMensuales
     ] = await Promise.all([
-      db.query(queryReservas, [mes, anio]),
-      db.query(queryIngresos, [mes, anio]),
-      db.query(queryArticulosMuebles, [mes, anio]),
-      db.query(queryArticulosCombos, [mes, anio]),
-      db.query(queryTopMuebles, [mes, anio]),
-      db.query(queryTopCombos, [mes, anio]),
-      db.query(queryGananciasDiarias, [mes, anio]),
+      db.query(queryReservas, [fechaInicio, fechaFin]),
+      db.query(queryIngresos, [fechaInicio, fechaFin]),
+      db.query(queryArticulosMuebles, [fechaInicio, fechaFin]),
+      db.query(queryArticulosCombos, [fechaInicio, fechaFin]),
+      db.query(queryTopMuebles, [fechaInicio, fechaFin]),
+      db.query(queryTopCombos, [fechaInicio, fechaFin]),
+      db.query(queryGananciasDiarias, [fechaInicio, fechaFin]),
       db.query(queryGananciasMensualesGenerales)
     ]);
 
@@ -179,12 +187,14 @@ router.get('/reportes', admin, async (req, res) => {
     const totalArticulos = parseInt(resArtMuebles.rows[0].total) + parseInt(resArtCombos.rows[0].total);
     
     res.json({
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin,
       total_reservas: totalReservas,
       total_ingresos: totalIngresos,
       total_articulos: totalArticulos,
       top_muebles: resTopMuebles.rows.map(r => ({ nombre: r.nombre, total: parseInt(r.total_alquilado) })),
       top_combos: resTopCombos.rows.map(r => ({ nombre: r.nombre, total: parseInt(r.total_alquilado) })),
-      ganancias_diarias: resGananciasDiarias.rows.map(r => ({ dia: r.dia, total: parseFloat(r.total) })),
+      ganancias_diarias: resGananciasDiarias.rows.map(r => ({ fecha: r.fecha, total: parseFloat(r.total) })),
       ganancias_mensuales_generales: resGananciasMensuales.rows.map(r => ({ anio: r.anio, mes: r.mes, total: parseFloat(r.total) }))
     });
   } catch (err) {
