@@ -162,6 +162,19 @@ router.get('/reportes', admin, async (req, res) => {
       ORDER BY anio, mes
     `;
 
+    // Query 8: Desglose de ingresos por categoría
+    const queryDesglose = `
+      SELECT 
+        COALESCE(SUM(CASE WHEN ri.mueble_id IS NOT NULL OR ri.combo_id IS NOT NULL THEN ri.subtotal ELSE 0 END), 0) AS mobiliario,
+        COALESCE(SUM(CASE WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND (ri.nombre ILIKE '%transporte%' OR ri.nombre ILIKE '%flete%' OR ri.nombre ILIKE '%envio%' OR ri.nombre ILIKE '%envío%') THEN ri.subtotal ELSE 0 END), 0) AS transporte,
+        COALESCE(SUM(CASE WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND ri.nombre ILIKE '%decorac%' THEN ri.subtotal ELSE 0 END), 0) AS decoracion,
+        COALESCE(SUM(CASE WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND NOT (ri.nombre ILIKE '%transporte%' OR ri.nombre ILIKE '%flete%' OR ri.nombre ILIKE '%envio%' OR ri.nombre ILIKE '%envío%' OR ri.nombre ILIKE '%decorac%') THEN ri.subtotal ELSE 0 END), 0) AS otros
+      FROM reserva_items ri
+      JOIN reservas r ON r.id = ri.reserva_id
+      WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1
+        AND r.estado != 'cancelada'
+    `;
+
     const [
       resReservas,
       resIngresos,
@@ -170,7 +183,8 @@ router.get('/reportes', admin, async (req, res) => {
       resTopMuebles,
       resTopCombos,
       resGananciasDiarias,
-      resGananciasMensuales
+      resGananciasMensuales,
+      resDesglose
     ] = await Promise.all([
       db.query(queryReservas, [fechaInicio, fechaFin]),
       db.query(queryIngresos, [fechaInicio, fechaFin]),
@@ -179,12 +193,20 @@ router.get('/reportes', admin, async (req, res) => {
       db.query(queryTopMuebles, [fechaInicio, fechaFin]),
       db.query(queryTopCombos, [fechaInicio, fechaFin]),
       db.query(queryGananciasDiarias, [fechaInicio, fechaFin]),
-      db.query(queryGananciasMensualesGenerales)
+      db.query(queryGananciasMensualesGenerales),
+      db.query(queryDesglose, [fechaInicio, fechaFin])
     ]);
 
     const totalReservas = parseInt(resReservas.rows[0].count);
     const totalIngresos = parseFloat(resIngresos.rows[0].total);
     const totalArticulos = parseInt(resArtMuebles.rows[0].total) + parseInt(resArtCombos.rows[0].total);
+
+    const rowDesglose = resDesglose.rows[0];
+    const ingresoMobiliario = parseFloat(rowDesglose.mobiliario || 0);
+    const ingresoTransporte = parseFloat(rowDesglose.transporte || 0);
+    const ingresoDecoracion = parseFloat(rowDesglose.decoracion || 0);
+    const ingresoOtros = parseFloat(rowDesglose.otros || 0);
+    const totalReservado = ingresoMobiliario + ingresoTransporte + ingresoDecoracion + ingresoOtros;
     
     res.json({
       fecha_inicio: fechaInicio,
@@ -195,7 +217,14 @@ router.get('/reportes', admin, async (req, res) => {
       top_muebles: resTopMuebles.rows.map(r => ({ nombre: r.nombre, total: parseInt(r.total_alquilado) })),
       top_combos: resTopCombos.rows.map(r => ({ nombre: r.nombre, total: parseInt(r.total_alquilado) })),
       ganancias_diarias: resGananciasDiarias.rows.map(r => ({ fecha: r.fecha, total: parseFloat(r.total) })),
-      ganancias_mensuales_generales: resGananciasMensuales.rows.map(r => ({ anio: r.anio, mes: r.mes, total: parseFloat(r.total) }))
+      ganancias_mensuales_generales: resGananciasMensuales.rows.map(r => ({ anio: r.anio, mes: r.mes, total: parseFloat(r.total) })),
+      desglose: {
+        total_reservado: totalReservado,
+        mobiliario: ingresoMobiliario,
+        transporte: ingresoTransporte,
+        decoracion: ingresoDecoracion,
+        otros: ingresoOtros
+      }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
