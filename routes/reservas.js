@@ -39,7 +39,14 @@ async function actualizarStockItem(client, item, accion) {
   const factor = accion === 'sumar' ? 1 : -1;
   
   if (item.combo_id) {
-    const componentes = await client.query('SELECT mueble_id, cantidad FROM combo_items WHERE combo_id = $1', [item.combo_id]);
+    // Check if we have custom components in reserva_combo_items
+    let componentes = await client.query(
+      'SELECT mueble_id, cantidad FROM reserva_combo_items WHERE reserva_id = $1 AND combo_id = $2',
+      [item.reserva_id, item.combo_id]
+    );
+    if (componentes.rows.length === 0) {
+      componentes = await client.query('SELECT mueble_id, cantidad FROM combo_items WHERE combo_id = $1', [item.combo_id]);
+    }
     for (const comp of componentes.rows) {
       const cantidadTotal = comp.cantidad * item.cantidad;
       await client.query(
@@ -148,7 +155,8 @@ router.post('/', async (req, res) => {
           nombre: combo.nombre,
           precio_unitario: precio,
           subtotal,
-          cantidad: item.cantidad
+          cantidad: item.cantidad,
+          componentes: item.componentes || null
         });
 
       } else if (item.mueble_id) {
@@ -202,8 +210,28 @@ router.post('/', async (req, res) => {
         'INSERT INTO reserva_items (reserva_id, mueble_id, combo_id, cantidad, precio_unitario, subtotal, nombre) VALUES ($1,$2,$3,$4,$5,$6,$7)',
         [reserva.id, item.mueble_id, item.combo_id, item.cantidad, item.precio_unitario, item.subtotal, item.nombre]
       );
+
+      if (item.combo_id) {
+        if (item.componentes && item.componentes.length > 0) {
+          for (const comp of item.componentes) {
+            await client.query(
+              'INSERT INTO reserva_combo_items (reserva_id, combo_id, mueble_id, cantidad) VALUES ($1, $2, $3, $4)',
+              [reserva.id, item.combo_id, comp.mueble_id, comp.cantidad]
+            );
+          }
+        } else {
+          const standardComps = await client.query('SELECT mueble_id, cantidad FROM combo_items WHERE combo_id = $1', [item.combo_id]);
+          for (const comp of standardComps.rows) {
+            await client.query(
+              'INSERT INTO reserva_combo_items (reserva_id, combo_id, mueble_id, cantidad) VALUES ($1, $2, $3, $4)',
+              [reserva.id, item.combo_id, comp.mueble_id, comp.cantidad]
+            );
+          }
+        }
+      }
+
       // Decrementar stock físico de componentes / muebles individuales
-      await actualizarStockItem(client, item, 'restar');
+      await actualizarStockItem(client, { ...item, reserva_id: reserva.id }, 'restar');
     }
 
     await client.query('COMMIT');
@@ -232,7 +260,19 @@ router.get('/', auth, async (req, res) => {
                      'combo_id', ri.combo_id,
                      'mueble', COALESCE(ri.nombre, m.nombre, c.nombre),
                      'cantidad', ri.cantidad,
-                     'subtotal', ri.subtotal
+                     'subtotal', ri.subtotal,
+                     'componentes', (
+                       SELECT COALESCE(json_agg(
+                         json_build_object(
+                           'mueble_id', rci.mueble_id,
+                           'nombre', m2.nombre,
+                           'cantidad', rci.cantidad
+                         )
+                       ), '[]')
+                       FROM reserva_combo_items rci
+                       JOIN muebles m2 ON m2.id = rci.mueble_id
+                       WHERE rci.reserva_id = r.id AND rci.combo_id = ri.combo_id
+                     )
                    )
                  ) FILTER (WHERE ri.id IS NOT NULL), '[]'
                ) AS items
@@ -254,7 +294,19 @@ router.get('/', auth, async (req, res) => {
                      'combo_id', ri.combo_id,
                      'mueble', COALESCE(ri.nombre, m.nombre, c.nombre),
                      'cantidad', ri.cantidad,
-                     'subtotal', ri.subtotal
+                     'subtotal', ri.subtotal,
+                     'componentes', (
+                       SELECT COALESCE(json_agg(
+                         json_build_object(
+                           'mueble_id', rci.mueble_id,
+                           'nombre', m2.nombre,
+                           'cantidad', rci.cantidad
+                         )
+                       ), '[]')
+                       FROM reserva_combo_items rci
+                       JOIN muebles m2 ON m2.id = rci.mueble_id
+                       WHERE rci.reserva_id = r.id AND rci.combo_id = ri.combo_id
+                     )
                    )
                  ) FILTER (WHERE ri.id IS NOT NULL), '[]'
                ) AS items
@@ -403,6 +455,7 @@ router.put('/:id/items', admin, async (req, res) => {
 
     // 2. Eliminar items anteriores
     await client.query('DELETE FROM reserva_items WHERE reserva_id = $1', [reservaId]);
+    await client.query('DELETE FROM reserva_combo_items WHERE reserva_id = $1', [reservaId]);
 
     // 3. Procesar nuevos items
     const dias = Math.ceil((new Date(reserva.fecha_fin) - new Date(reserva.fecha_inicio)) / 86400000) + 1;
@@ -442,9 +495,11 @@ router.put('/:id/items', admin, async (req, res) => {
         itemsProcesados.push({
           combo_id: combo.id,
           mueble_id: null,
+          nombre: combo.nombre,
           precio_unitario: precio,
           subtotal,
-          cantidad: item.cantidad
+          cantidad: item.cantidad,
+          componentes: item.componentes || null
         });
 
       } else if (item.mueble_id) {
@@ -490,8 +545,28 @@ router.put('/:id/items', admin, async (req, res) => {
         'INSERT INTO reserva_items (reserva_id, mueble_id, combo_id, cantidad, precio_unitario, subtotal, nombre) VALUES ($1,$2,$3,$4,$5,$6,$7)',
         [reservaId, item.mueble_id, item.combo_id, item.cantidad, item.precio_unitario, item.subtotal, item.nombre]
       );
+
+      if (item.combo_id) {
+        if (item.componentes && item.componentes.length > 0) {
+          for (const comp of item.componentes) {
+            await client.query(
+              'INSERT INTO reserva_combo_items (reserva_id, combo_id, mueble_id, cantidad) VALUES ($1, $2, $3, $4)',
+              [reservaId, item.combo_id, comp.mueble_id, comp.cantidad]
+            );
+          }
+        } else {
+          const standardComps = await client.query('SELECT mueble_id, cantidad FROM combo_items WHERE combo_id = $1', [item.combo_id]);
+          for (const comp of standardComps.rows) {
+            await client.query(
+              'INSERT INTO reserva_combo_items (reserva_id, combo_id, mueble_id, cantidad) VALUES ($1, $2, $3, $4)',
+              [reservaId, item.combo_id, comp.mueble_id, comp.cantidad]
+            );
+          }
+        }
+      }
+
       if (esVigente) {
-        await actualizarStockItem(client, item, 'restar');
+        await actualizarStockItem(client, { ...item, reserva_id: reservaId }, 'restar');
       }
     }
 

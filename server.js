@@ -17,4 +17,21 @@ app.use('/api/combos',    require('./routes/combos'));  // ← NUEVO
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, '0.0.0.0', () => console.log(`Servidor corriendo en puerto ${PORT}`));
+const db = require('./db');
+
+db.query(`
+  CREATE TABLE IF NOT EXISTS reserva_combo_items (
+    id SERIAL PRIMARY KEY,
+    reserva_id UUID REFERENCES reservas(id) ON DELETE CASCADE,
+    combo_id UUID REFERENCES combos(id) ON DELETE CASCADE,
+    mueble_id UUID REFERENCES muebles(id) ON DELETE CASCADE,
+    cantidad INT NOT NULL
+  );
+`).then(() => {
+  console.log('Tabla reserva_combo_items verificada/creada con éxito');
+  app.listen(PORT, '0.0.0.0', () => console.log(`Servidor corriendo en puerto ${PORT}`));
+}).catch(err => {
+  console.error('Error al inicializar la tabla reserva_combo_items:', err);
+  // Aun así iniciar servidor para evitar caída total si falla la conexión inicial
+  app.listen(PORT, '0.0.0.0', () => console.log(`Servidor corriendo en puerto ${PORT}`));
+});
