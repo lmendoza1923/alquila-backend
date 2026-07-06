@@ -2,9 +2,15 @@ const router = require('express').Router();
 const db = require('../db');
 const { admin } = require('../middleware/auth');
 
-// Listar todos los combos activos
+// Listar todos los combos (con filtro opcional)
 router.get('/', async (req, res) => {
   try {
+    const { todos } = req.query;
+    let whereClause = 'WHERE c.activo = true';
+    if (todos === 'true') {
+      whereClause = 'WHERE 1=1';
+    }
+
     const query = `
       SELECT c.*, 
              COALESCE(
@@ -21,7 +27,7 @@ router.get('/', async (req, res) => {
       FROM combos c
       LEFT JOIN combo_items ci ON ci.combo_id = c.id
       LEFT JOIN muebles m ON m.id = ci.mueble_id AND m.activo = true
-      WHERE c.activo = true
+      ${whereClause}
       GROUP BY c.id
       ORDER BY c.nombre;
     `;
@@ -51,7 +57,7 @@ router.get('/:id', async (req, res) => {
       FROM combos c
       LEFT JOIN combo_items ci ON ci.combo_id = c.id
       LEFT JOIN muebles m ON m.id = ci.mueble_id AND m.activo = true
-      WHERE c.id = $1 AND c.activo = true
+      WHERE c.id = $1
       GROUP BY c.id;
     `;
     const result = await db.query(query, [req.params.id]);
