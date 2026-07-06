@@ -143,9 +143,14 @@ router.post('/', async (req, res) => {
           }
         }
 
-        let precio = combo.precio_dia;
-        if (dias >= 30 && combo.precio_mes) precio = combo.precio_mes / 30;
-        else if (dias >= 7 && combo.precio_semana) precio = combo.precio_semana / 7;
+        let precio;
+        if (item.precio_unitario !== undefined && item.precio_unitario !== null && !isNaN(item.precio_unitario)) {
+          precio = parseFloat(item.precio_unitario);
+        } else {
+          precio = combo.precio_dia;
+          if (dias >= 30 && combo.precio_mes) precio = combo.precio_mes / 30;
+          else if (dias >= 7 && combo.precio_semana) precio = combo.precio_semana / 7;
+        }
 
         const subtotal = parseFloat((precio * item.cantidad * dias).toFixed(2));
         total += subtotal;
@@ -168,9 +173,14 @@ router.post('/', async (req, res) => {
         if (m.stock < item.cantidad)
           throw new Error(`Solo hay ${m.stock} unidades disponibles de "${m.nombre}"`);
 
-        let precio = m.precio_dia;
-        if (dias >= 30 && m.precio_mes) precio = m.precio_mes / 30;
-        else if (dias >= 7 && m.precio_semana) precio = m.precio_semana / 7;
+        let precio;
+        if (item.precio_unitario !== undefined && item.precio_unitario !== null && !isNaN(item.precio_unitario)) {
+          precio = parseFloat(item.precio_unitario);
+        } else {
+          precio = m.precio_dia;
+          if (dias >= 30 && m.precio_mes) precio = m.precio_mes / 30;
+          else if (dias >= 7 && m.precio_semana) precio = m.precio_semana / 7;
+        }
 
         const subtotal = parseFloat((precio * item.cantidad * dias).toFixed(2));
         total += subtotal;
@@ -261,6 +271,7 @@ router.get('/', auth, async (req, res) => {
                      'mueble', COALESCE(ri.nombre, m.nombre, c.nombre),
                      'cantidad', ri.cantidad,
                      'subtotal', ri.subtotal,
+                     'precio_unitario', ri.precio_unitario,
                      'componentes', (
                        SELECT COALESCE(json_agg(
                          json_build_object(
@@ -295,6 +306,7 @@ router.get('/', auth, async (req, res) => {
                      'mueble', COALESCE(ri.nombre, m.nombre, c.nombre),
                      'cantidad', ri.cantidad,
                      'subtotal', ri.subtotal,
+                     'precio_unitario', ri.precio_unitario,
                      'componentes', (
                        SELECT COALESCE(json_agg(
                          json_build_object(
@@ -486,9 +498,14 @@ router.put('/:id/items', admin, async (req, res) => {
           }
         }
 
-        let precio = combo.precio_dia;
-        if (dias >= 30 && combo.precio_mes) precio = combo.precio_mes / 30;
-        else if (dias >= 7 && combo.precio_semana) precio = combo.precio_semana / 7;
+        let precio;
+        if (item.precio_unitario !== undefined && item.precio_unitario !== null && !isNaN(item.precio_unitario)) {
+          precio = parseFloat(item.precio_unitario);
+        } else {
+          precio = combo.precio_dia;
+          if (dias >= 30 && combo.precio_mes) precio = combo.precio_mes / 30;
+          else if (dias >= 7 && combo.precio_semana) precio = combo.precio_semana / 7;
+        }
 
         const subtotal = parseFloat((precio * item.cantidad * dias).toFixed(2));
         nuevoTotal += subtotal;
@@ -511,9 +528,14 @@ router.put('/:id/items', admin, async (req, res) => {
           throw new Error(`Stock insuficiente de "${m.nombre}". Disponibles: ${m.stock}`);
         }
 
-        let precio = m.precio_dia;
-        if (dias >= 30 && m.precio_mes) precio = m.precio_mes / 30;
-        else if (dias >= 7 && m.precio_semana) precio = m.precio_semana / 7;
+        let precio;
+        if (item.precio_unitario !== undefined && item.precio_unitario !== null && !isNaN(item.precio_unitario)) {
+          precio = parseFloat(item.precio_unitario);
+        } else {
+          precio = m.precio_dia;
+          if (dias >= 30 && m.precio_mes) precio = m.precio_mes / 30;
+          else if (dias >= 7 && m.precio_semana) precio = m.precio_semana / 7;
+        }
 
         const subtotal = parseFloat((precio * item.cantidad * dias).toFixed(2));
         nuevoTotal += subtotal;
