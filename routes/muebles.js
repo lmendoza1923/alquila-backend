@@ -5,14 +5,19 @@ const { admin } = require('../middleware/auth');
 // Listar muebles (con filtros opcionales)
 router.get('/', async (req, res) => {
   try {
-    const { categoria, busqueda, fecha_inicio, fecha_fin } = req.query;
+    const { categoria, busqueda, todos } = req.query;
     let query = `
       SELECT m.*, c.nombre AS categoria_nombre
       FROM muebles m
       LEFT JOIN categorias c ON c.id = m.categoria_id
-      WHERE m.activo = true
+      WHERE 1=1
     `;
     const params = [];
+
+    if (todos !== 'true') {
+      query += ' AND m.activo = true';
+    }
+
     if (categoria) { params.push(categoria); query += ` AND m.categoria_id = $${params.length}`; }
     if (busqueda)  { params.push(`%${busqueda}%`); query += ` AND m.nombre ILIKE $${params.length}`; }
     query += ' ORDER BY m.nombre';
@@ -30,7 +35,7 @@ router.get('/:id', async (req, res) => {
     const result = await db.query(
       `SELECT m.*, c.nombre AS categoria_nombre
        FROM muebles m LEFT JOIN categorias c ON c.id = m.categoria_id
-       WHERE m.id = $1 AND m.activo = true`,
+       WHERE m.id = $1`,
       [req.params.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Mueble no encontrado' });
