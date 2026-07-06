@@ -7,18 +7,20 @@ const reservasRouter = require('./reservas');
 router.get('/stats', admin, async (req, res) => {
   try {
     await reservasRouter.autoCompletarReservasExpiradas();
-    const [reservas, ingresos, muebles, pendientes] = await Promise.all([
+    const [reservas, ingresos, muebles, pendientes, combos] = await Promise.all([
       db.query("SELECT COUNT(*) FROM reservas WHERE estado != 'cancelada'"),
       db.query("SELECT COALESCE(SUM(total),0) AS total FROM reservas WHERE estado IN ('confirmada','activa','completada')"),
       db.query('SELECT COUNT(*) FROM muebles WHERE activo=true'),
-      db.query("SELECT COUNT(*) FROM reservas WHERE estado='pendiente'")
+      db.query("SELECT COUNT(*) FROM reservas WHERE estado='pendiente'"),
+      db.query('SELECT COUNT(*) FROM combos WHERE activo=true')
     ]);
 
     res.json({
       total_reservas: parseInt(reservas.rows[0].count),
       ingresos_total: parseFloat(ingresos.rows[0].total),
       total_muebles: parseInt(muebles.rows[0].count),
-      reservas_pendientes: parseInt(pendientes.rows[0].count)
+      reservas_pendientes: parseInt(pendientes.rows[0].count),
+      total_combos: parseInt(combos.rows[0].count)
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
