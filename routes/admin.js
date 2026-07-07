@@ -32,7 +32,7 @@ router.get('/reservas-recientes', admin, async (req, res) => {
   try {
     await reservasRouter.autoCompletarReservasExpiradas();
     const result = await db.query(
-      `SELECT id, nombre_cliente, email_cliente, fecha_inicio, fecha_fin, estado, total, creado_en
+      `SELECT id, alias_cliente, nombre_cliente, email_cliente, fecha_inicio, fecha_fin, estado, total, creado_en
        FROM reservas ORDER BY creado_en DESC LIMIT 20`
     );
     res.json(result.rows);

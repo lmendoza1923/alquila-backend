@@ -106,7 +106,7 @@ router.post('/', async (req, res) => {
     await client.query('BEGIN');
     const {
       fecha_inicio, fecha_fin,
-      nombre_cliente, email_cliente, telefono_cliente,
+      alias_cliente, nombre_cliente, email_cliente, telefono_cliente,
       direccion_entrega, notas, items
     } = req.body;
 
@@ -208,12 +208,12 @@ router.post('/', async (req, res) => {
       }
     }
 
-    const reservaResult = await client.query(
-      `INSERT INTO reservas (fecha_inicio, fecha_fin, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total, estado)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [fecha_inicio, fecha_fin, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total.toFixed(2), 'activa']
+    const resReserva = await client.query(
+      `INSERT INTO reservas (fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total, estado)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total.toFixed(2), 'activa']
     );
-    const reserva = reservaResult.rows[0];
+    const reserva = resReserva.rows[0];
 
     for (const item of itemsDetalle) {
       await client.query(
@@ -390,7 +390,7 @@ router.put('/:id', admin, async (req, res) => {
     await client.query('BEGIN');
     const {
       fecha_inicio, fecha_fin,
-      nombre_cliente, email_cliente, telefono_cliente,
+      alias_cliente, nombre_cliente, email_cliente, telefono_cliente,
       direccion_entrega, notas, estado, total
     } = req.body;
 
@@ -409,10 +409,10 @@ router.put('/:id', admin, async (req, res) => {
 
     const result = await client.query(
       `UPDATE reservas 
-       SET fecha_inicio=$1, fecha_fin=$2, nombre_cliente=$3, email_cliente=$4, 
-           telefono_cliente=$5, direccion_entrega=$6, notas=$7, estado=$8, total=$9
-       WHERE id=$10 RETURNING *`,
-      [fecha_inicio, fecha_fin, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, estado, total, req.params.id]
+       SET fecha_inicio=$1, fecha_fin=$2, alias_cliente=$3, nombre_cliente=$4, email_cliente=$5, 
+           telefono_cliente=$6, direccion_entrega=$7, notas=$8, estado=$9, total=$10
+       WHERE id=$11 RETURNING *`,
+      [fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, estado, total, req.params.id]
     );
     const reservaActualizada = result.rows[0];
 
