@@ -9,7 +9,7 @@ router.get('/stats', admin, async (req, res) => {
     await reservasRouter.autoCompletarReservasExpiradas();
     const [reservas, ingresos, muebles, pendientes, combos] = await Promise.all([
       db.query("SELECT COUNT(*) FROM reservas WHERE estado != 'cancelada'"),
-      db.query("SELECT COALESCE(SUM(total),0) AS total FROM reservas WHERE estado IN ('confirmada','activa','completada')"),
+      db.query("SELECT COALESCE(SUM(monto),0) AS total FROM pagos"),
       db.query('SELECT COUNT(*) FROM muebles WHERE activo=true'),
       db.query("SELECT COUNT(*) FROM reservas WHERE estado='pendiente'"),
       db.query('SELECT COUNT(*) FROM combos WHERE activo=true')
@@ -164,17 +164,42 @@ router.get('/reportes', admin, async (req, res) => {
       ORDER BY anio, mes
     `;
 
-    // Query 8: Desglose de ingresos por categoría
+    // Query 8: Desglose de ingresos por categoría (proporcional a los pagos recibidos en el período)
     const queryDesglose = `
       SELECT 
-        COALESCE(SUM(CASE WHEN ri.mueble_id IS NOT NULL OR ri.combo_id IS NOT NULL THEN ri.subtotal ELSE 0 END), 0) AS mobiliario,
-        COALESCE(SUM(CASE WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND (ri.nombre ILIKE '%transporte%' OR ri.nombre ILIKE '%flete%' OR ri.nombre ILIKE '%envio%' OR ri.nombre ILIKE '%envío%') THEN ri.subtotal ELSE 0 END), 0) AS transporte,
-        COALESCE(SUM(CASE WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND ri.nombre ILIKE '%decorac%' THEN ri.subtotal ELSE 0 END), 0) AS decoracion,
-        COALESCE(SUM(CASE WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND NOT (ri.nombre ILIKE '%transporte%' OR ri.nombre ILIKE '%flete%' OR ri.nombre ILIKE '%envio%' OR ri.nombre ILIKE '%envío%' OR ri.nombre ILIKE '%decorac%') THEN ri.subtotal ELSE 0 END), 0) AS otros
-      FROM reserva_items ri
-      JOIN reservas r ON r.id = ri.reserva_id
-      WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1
-        AND r.estado != 'cancelada'
+        COALESCE(SUM(
+          CASE 
+            WHEN ri.mueble_id IS NOT NULL OR ri.combo_id IS NOT NULL 
+            THEN ri.subtotal * (p.monto / r.total) 
+            ELSE 0 
+          END
+        ), 0) AS mobiliario,
+        COALESCE(SUM(
+          CASE 
+            WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND (ri.nombre ILIKE '%transporte%' OR ri.nombre ILIKE '%flete%' OR ri.nombre ILIKE '%envio%' OR ri.nombre ILIKE '%envío%') 
+            THEN ri.subtotal * (p.monto / r.total) 
+            ELSE 0 
+          END
+        ), 0) AS transporte,
+        COALESCE(SUM(
+          CASE 
+            WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND ri.nombre ILIKE '%decorac%' 
+            THEN ri.subtotal * (p.monto / r.total) 
+            ELSE 0 
+          END
+        ), 0) AS decoracion,
+        COALESCE(SUM(
+          CASE 
+            WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND NOT (ri.nombre ILIKE '%transporte%' OR ri.nombre ILIKE '%flete%' OR ri.nombre ILIKE '%envio%' OR ri.nombre ILIKE '%envío%' OR ri.nombre ILIKE '%decorac%') 
+            THEN ri.subtotal * (p.monto / r.total) 
+            ELSE 0 
+          END
+        ), 0) AS otros
+      FROM pagos p
+      JOIN reservas r ON r.id = p.reserva_id
+      JOIN reserva_items ri ON ri.reserva_id = r.id
+      WHERE p.creado_en >= $1::date AND p.creado_en < $2::date + 1
+        AND r.total > 0
     `;
 
     const [
