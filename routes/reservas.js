@@ -2,6 +2,7 @@ const router = require('express').Router();
 const db = require('../db');
 const { auth, admin } = require('../middleware/auth');
 const nodemailer = require('nodemailer');
+const googleCalendar = require('../services/googleCalendar');
 
 const mailer = nodemailer.createTransport({
   host: process.env.EMAIL_HOST,
@@ -247,6 +248,8 @@ router.post('/', async (req, res) => {
     await client.query('COMMIT');
 
     enviarConfirmacion(reserva, itemsDetalle).catch(console.error);
+    googleCalendar.crearEventoReserva(reserva, itemsDetalle).catch(e => console.error('Error Google Calendar crearEvento:', e.message));
+
     res.status(201).json({ reserva, items: itemsDetalle });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -374,6 +377,16 @@ router.patch('/:id/estado', admin, async (req, res) => {
     }
 
     await client.query('COMMIT');
+
+    // Sincronizar con Google Calendar
+    if (estado === 'cancelada' && reservaActualizada.google_event_id) {
+      googleCalendar.eliminarEventoReserva(reservaActualizada.google_event_id).catch(e => console.error('Error Google Calendar:', e.message));
+    } else {
+      db.query('SELECT nombre, cantidad, precio_unitario, subtotal FROM reserva_items WHERE reserva_id = $1', [req.params.id])
+        .then(rItems => googleCalendar.actualizarEventoReserva(reservaActualizada.google_event_id, reservaActualizada, rItems.rows))
+        .catch(e => console.error('Error Google Calendar:', e.message));
+    }
+
     res.json(reservaActualizada);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -429,6 +442,16 @@ router.put('/:id', admin, async (req, res) => {
     }
 
     await client.query('COMMIT');
+
+    // Sincronizar con Google Calendar
+    if (estado === 'cancelada' && reservaActualizada.google_event_id) {
+      googleCalendar.eliminarEventoReserva(reservaActualizada.google_event_id).catch(e => console.error('Error Google Calendar:', e.message));
+    } else {
+      db.query('SELECT nombre, cantidad, precio_unitario, subtotal FROM reserva_items WHERE reserva_id = $1', [req.params.id])
+        .then(rItems => googleCalendar.actualizarEventoReserva(reservaActualizada.google_event_id, reservaActualizada, rItems.rows))
+        .catch(e => console.error('Error Google Calendar:', e.message));
+    }
+
     res.json(reservaActualizada);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -596,6 +619,15 @@ router.put('/:id/items', admin, async (req, res) => {
     await client.query('UPDATE reservas SET total = $1 WHERE id = $2', [nuevoTotal.toFixed(2), reservaId]);
 
     await client.query('COMMIT');
+
+    db.query('SELECT * FROM reservas WHERE id = $1', [reservaId])
+      .then(resv => {
+        if (resv.rows.length) {
+          googleCalendar.actualizarEventoReserva(resv.rows[0].google_event_id, resv.rows[0], itemsProcesados).catch(e => console.error('Error Google Calendar:', e.message));
+        }
+      })
+      .catch(e => console.error('Error Google Calendar:', e.message));
+
     res.json({ ok: true, nuevoTotal });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -611,13 +643,14 @@ router.delete('/:id', admin, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const reservaRes = await client.query('SELECT estado FROM reservas WHERE id = $1', [req.params.id]);
+    const reservaRes = await client.query('SELECT estado, google_event_id FROM reservas WHERE id = $1', [req.params.id]);
     if (!reservaRes.rows.length) {
       client.release();
       return res.status(404).json({ error: 'Reserva no encontrada' });
     }
 
     const estadoActual = reservaRes.rows[0].estado;
+    const googleEvtId = reservaRes.rows[0].google_event_id;
     const esVigente = ['pendiente', 'confirmada', 'activa'].includes(estadoActual);
 
     if (esVigente) {
@@ -632,6 +665,11 @@ router.delete('/:id', admin, async (req, res) => {
     await client.query('DELETE FROM reservas WHERE id = $1', [req.params.id]);
 
     await client.query('COMMIT');
+
+    if (googleEvtId) {
+      googleCalendar.eliminarEventoReserva(googleEvtId).catch(e => console.error('Error Google Calendar:', e.message));
+    }
+
     res.json({ ok: true });
   } catch (err) {
     await client.query('ROLLBACK');

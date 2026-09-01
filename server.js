@@ -11,9 +11,10 @@ app.use('/api/muebles',   require('./routes/muebles'));
 app.use('/api/reservas',  require('./routes/reservas'));
 app.use('/api/categorias',require('./routes/categorias'));
 app.use('/api/admin',     require('./routes/admin'));
-app.use('/api/pagos',         require('./routes/pagos'));   // ← NUEVO
-app.use('/api/combos',        require('./routes/combos'));  // ← NUEVO
-app.use('/api/configuracion', require('./routes/configuracion'));
+app.use('/api/pagos',           require('./routes/pagos'));
+app.use('/api/combos',          require('./routes/combos'));
+app.use('/api/configuracion',   require('./routes/configuracion'));
+app.use('/api/google-calendar', require('./routes/googleCalendar'));
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
@@ -25,6 +26,7 @@ db.query(`
     clave VARCHAR(255) PRIMARY KEY,
     valor TEXT
   );
+  ALTER TABLE reservas ADD COLUMN IF NOT EXISTS google_event_id VARCHAR(255);
   CREATE TABLE IF NOT EXISTS reserva_combo_items (
     id SERIAL PRIMARY KEY,
     reserva_id UUID REFERENCES reservas(id) ON DELETE CASCADE,
@@ -35,10 +37,9 @@ db.query(`
   ALTER TABLE reserva_items DROP CONSTRAINT IF EXISTS reserva_items_mueble_id_fkey;
   ALTER TABLE reserva_items ADD CONSTRAINT reserva_items_mueble_id_fkey FOREIGN KEY (mueble_id) REFERENCES muebles(id) ON DELETE SET NULL;
 `).then(() => {
-  console.log('Tabla reserva_combo_items verificada/creada con éxito');
+  console.log('Tablas y columnas verificadas/creadas con éxito');
   app.listen(PORT, '0.0.0.0', () => console.log(`Servidor corriendo en puerto ${PORT}`));
 }).catch(err => {
-  console.error('Error al inicializar la tabla reserva_combo_items:', err);
-  // Aun así iniciar servidor para evitar caída total si falla la conexión inicial
+  console.error('Error al inicializar la base de datos:', err);
   app.listen(PORT, '0.0.0.0', () => console.log(`Servidor corriendo en puerto ${PORT}`));
 });
