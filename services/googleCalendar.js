@@ -185,35 +185,18 @@ function getExclusiveEndDate(dateStr) {
   return `${y}-${m}-${day}`;
 }
 
-// Construir payload de evento para Google Calendar
-function buildEventBody(reserva, items = []) {
+// Construir payload de evento para Google Calendar (solo cliente, teléfono y dirección)
+function buildEventBody(reserva) {
   const cleanPhone = (reserva.telefono_cliente || '').replace(/^\+?507\s*/, '').trim();
-  const idCorto = (reserva.id || '').toString().slice(0, 8).toUpperCase();
   const nombreCliente = reserva.nombre_cliente || 'Cliente';
-  const alias = reserva.alias_cliente ? ` (${reserva.alias_cliente})` : '';
 
-  const summary = `🎉 Reserva: ${nombreCliente}${alias} #${idCorto}`;
+  const summary = nombreCliente;
 
-  const itemsTexto = (items && items.length > 0)
-    ? items.map(i => `• ${i.cantidad}x ${i.nombre || i.mueble || 'Artículo'}`).join('\n')
-    : '• Mobiliario contratado';
-
-  const description = `📋 DETALLES DE LA RESERVA #${idCorto}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👤 Cliente: ${nombreCliente}
-🏷️ Evento: ${reserva.alias_cliente || 'N/A'}
-📞 Teléfono: ${cleanPhone || 'N/A'}
-✉️ Email: ${reserva.email_cliente || 'N/A'}
-📍 Dirección de Entrega: ${reserva.direccion_entrega || 'N/A'}
-📝 Notas / Instrucciones: ${reserva.notas || reserva.notes || 'Ninguna'}
-💰 Total Contratado: $${parseFloat(reserva.total || 0).toFixed(2)}
-📊 Estado: ${reserva.estado || 'activa'}
-
-📦 ARTÍCULOS Y MOBILIARIO:
-${itemsTexto}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✨ Sistema de Alquiler de Mobiliario`;
+  const description = [
+    `Cliente: ${nombreCliente}`,
+    `Teléfono: ${cleanPhone || 'N/A'}`,
+    `Dirección: ${reserva.direccion_entrega || 'N/A'}`
+  ].join('\n');
 
   const startStr = (reserva.fecha_inicio || '').substring(0, 10);
   const endStr = (reserva.fecha_fin || reserva.fecha_inicio || '').substring(0, 10);
