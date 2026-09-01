@@ -97,8 +97,9 @@ router.put('/:id', admin, async (req, res) => {
 
 router.delete('/:id', admin, async (req, res) => {
   try {
-    await db.query('UPDATE muebles SET activo=false WHERE id=$1', [req.params.id]);
-    res.json({ ok: true });
+    const result = await db.query('DELETE FROM muebles WHERE id=$1 RETURNING *', [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Mueble no encontrado' });
+    res.json({ ok: true, deleted: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

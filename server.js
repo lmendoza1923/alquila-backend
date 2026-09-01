@@ -27,6 +27,8 @@ db.query(`
     mueble_id UUID REFERENCES muebles(id) ON DELETE CASCADE,
     cantidad INT NOT NULL
   );
+  ALTER TABLE reserva_items DROP CONSTRAINT IF EXISTS reserva_items_mueble_id_fkey;
+  ALTER TABLE reserva_items ADD CONSTRAINT reserva_items_mueble_id_fkey FOREIGN KEY (mueble_id) REFERENCES muebles(id) ON DELETE SET NULL;
 `).then(() => {
   console.log('Tabla reserva_combo_items verificada/creada con éxito');
   app.listen(PORT, '0.0.0.0', () => console.log(`Servidor corriendo en puerto ${PORT}`));

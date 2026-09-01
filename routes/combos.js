@@ -164,17 +164,24 @@ router.put('/:id', admin, async (req, res) => {
   }
 });
 
-// Eliminar un combo lógicamente (Solo admin)
+// Eliminar un combo definitivamente de la base de datos (Solo admin)
 router.delete('/:id', admin, async (req, res) => {
+  const client = await db.connect();
   try {
-    const result = await db.query(
-      'UPDATE combos SET activo = false WHERE id = $1 RETURNING *',
-      [req.params.id]
-    );
-    if (!result.rows.length) return res.status(404).json({ error: 'Combo no encontrado' });
-    res.json({ ok: true });
+    await client.query('BEGIN');
+    await client.query('DELETE FROM combo_items WHERE combo_id = $1', [req.params.id]);
+    const result = await client.query('DELETE FROM combos WHERE id = $1 RETURNING *', [req.params.id]);
+    if (!result.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Combo no encontrado' });
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, deleted: result.rows[0] });
   } catch (err) {
+    await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
