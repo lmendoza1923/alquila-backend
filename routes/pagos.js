@@ -30,14 +30,22 @@ router.get('/reserva/:reservaId', admin, async (req, res) => {
 // Registrar un pago o abono
 router.post('/', admin, async (req, res) => {
   try {
-    const { reserva_id, monto, metodo, notas } = req.body;
+    const { reserva_id, monto, metodo, notas, fecha, creado_en } = req.body;
     if (!reserva_id || !monto || parseFloat(monto) <= 0)
       return res.status(400).json({ error: 'Reserva y monto son obligatorios' });
 
-    const result = await db.query(
-      `INSERT INTO pagos (reserva_id, monto, metodo, notas) VALUES ($1, $2, $3, $4) RETURNING *`,
-      [reserva_id, parseFloat(monto), metodo || 'efectivo', notas || '']
-    );
+    const fechaFinal = fecha || creado_en;
+    let query, params;
+    if (fechaFinal) {
+      const fechaValida = fechaFinal.length === 10 ? `${fechaFinal}T12:00:00Z` : fechaFinal;
+      query = `INSERT INTO pagos (reserva_id, monto, metodo, notas, creado_en) VALUES ($1, $2, $3, $4, $5) RETURNING *`;
+      params = [reserva_id, parseFloat(monto), metodo || 'efectivo', notas || '', fechaValida];
+    } else {
+      query = `INSERT INTO pagos (reserva_id, monto, metodo, notas) VALUES ($1, $2, $3, $4) RETURNING *`;
+      params = [reserva_id, parseFloat(monto), metodo || 'efectivo', notas || ''];
+    }
+
+    const result = await db.query(query, params);
     res.status(201).json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
