@@ -63,29 +63,20 @@ router.get('/reportes', admin, async (req, res) => {
       const ultimoDia = new Date(anio, mes, 0).getDate();
       fechaFin = `${anio}-${mesStr}-${String(ultimoDia).padStart(2, '0')}`;
     }
-
-    // Query 1: Total de reservas en el rango de fechas
+    // Query 1: Total de reservas en el rango de fechas (por fecha de inicio/evento)
     const queryReservas = `
       SELECT COUNT(*) AS count 
       FROM reservas 
-      WHERE creado_en >= $1::date AND creado_en < $2::date + 1 
+      WHERE fecha_inicio >= $1::date AND fecha_inicio < $2::date + 1 
         AND estado != 'cancelada'
     `;
 
-    // Query 2: Total de ingresos (pagos registrados) en el rango de fechas
-    const queryIngresos = `
-      SELECT COALESCE(SUM(monto), 0) AS total 
-      FROM pagos 
-      WHERE creado_en >= $1::date AND creado_en < $2::date + 1
-    `;
-
     // Query 3: Total de artículos (muebles físicos) alquilados en el rango de fechas
-    // Consideramos tanto alquileres individuales como componentes de combos
     const queryArticulosMuebles = `
       SELECT COALESCE(SUM(ri.cantidad), 0) AS total
       FROM reserva_items ri
       JOIN reservas r ON r.id = ri.reserva_id
-      WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1 
+      WHERE r.fecha_inicio >= $1::date AND r.fecha_inicio < $2::date + 1 
         AND r.estado != 'cancelada' 
         AND ri.mueble_id IS NOT NULL
     `;
@@ -95,7 +86,7 @@ router.get('/reportes', admin, async (req, res) => {
       FROM reserva_items ri
       JOIN reservas r ON r.id = ri.reserva_id
       JOIN combo_items ci ON ci.combo_id = ri.combo_id
-      WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1 
+      WHERE r.fecha_inicio >= $1::date AND r.fecha_inicio < $2::date + 1 
         AND r.estado != 'cancelada' 
         AND ri.combo_id IS NOT NULL
     `;
@@ -106,7 +97,7 @@ router.get('/reportes', admin, async (req, res) => {
         SELECT ri.mueble_id, SUM(ri.cantidad) AS total
         FROM reserva_items ri
         JOIN reservas r ON r.id = ri.reserva_id
-        WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1 
+        WHERE r.fecha_inicio >= $1::date AND r.fecha_inicio < $2::date + 1 
           AND r.estado != 'cancelada'
           AND ri.mueble_id IS NOT NULL
         GROUP BY ri.mueble_id
@@ -117,7 +108,7 @@ router.get('/reportes', admin, async (req, res) => {
         FROM reserva_items ri
         JOIN reservas r ON r.id = ri.reserva_id
         JOIN combo_items ci ON ci.combo_id = ri.combo_id
-        WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1 
+        WHERE r.fecha_inicio >= $1::date AND r.fecha_inicio < $2::date + 1 
           AND r.estado != 'cancelada'
           AND ri.combo_id IS NOT NULL
         GROUP BY ci.mueble_id
@@ -136,7 +127,7 @@ router.get('/reportes', admin, async (req, res) => {
       FROM reserva_items ri
       JOIN reservas r ON r.id = ri.reserva_id
       JOIN combos c ON c.id = ri.combo_id
-      WHERE r.creado_en >= $1::date AND r.creado_en < $2::date + 1 
+      WHERE r.fecha_inicio >= $1::date AND r.fecha_inicio < $2::date + 1 
         AND r.estado != 'cancelada'
         AND ri.combo_id IS NOT NULL
       GROUP BY c.id, c.nombre
@@ -144,181 +135,129 @@ router.get('/reportes', admin, async (req, res) => {
       LIMIT 5
     `;
 
-    // Query 6: Ganancias diarias agrupadas por fecha exacta YYYY-MM-DD
+    // Query 6: Ganancias diarias agrupadas por fecha de evento
     const queryGananciasDiarias = `
-      SELECT TO_CHAR(creado_en, 'YYYY-MM-DD') AS fecha, COALESCE(SUM(monto), 0) AS total
-      FROM pagos
-      WHERE creado_en >= $1::date AND creado_en < $2::date + 1
-      GROUP BY TO_CHAR(creado_en, 'YYYY-MM-DD')
+      SELECT TO_CHAR(r.fecha_inicio, 'YYYY-MM-DD') AS fecha, COALESCE(SUM(p.monto), 0) AS total
+      FROM pagos p
+      JOIN reservas r ON r.id = p.reserva_id
+      WHERE r.fecha_inicio >= $1::date AND r.fecha_inicio < $2::date + 1
+        AND r.estado != 'cancelada'
+      GROUP BY TO_CHAR(r.fecha_inicio, 'YYYY-MM-DD')
       ORDER BY fecha
     `;
 
-    // Query 7: Ganancias generales de todos los meses (para la gráfica histórica)
+    // Query 7: Ganancias generales de todos los meses (para la gráfica histórica por fecha de evento)
     const queryGananciasMensualesGenerales = `
       SELECT 
-        EXTRACT(YEAR FROM creado_en)::INTEGER AS anio, 
-        EXTRACT(MONTH FROM creado_en)::INTEGER AS mes, 
-        COALESCE(SUM(monto), 0) AS total
-      FROM pagos
+        EXTRACT(YEAR FROM r.fecha_inicio)::INTEGER AS anio, 
+        EXTRACT(MONTH FROM r.fecha_inicio)::INTEGER AS mes, 
+        COALESCE(SUM(p.monto), 0) AS total
+      FROM pagos p
+      JOIN reservas r ON r.id = p.reserva_id
+      WHERE r.estado != 'cancelada'
       GROUP BY anio, mes
       ORDER BY anio, mes
     `;
 
-// Función para calcular el desglose de ingresos por categoría:
-// Regla: Los abonos se cargan a mobiliario (no se reparten a transporte ni decoración).
-// Solo cuando se cancela el saldo completo de la reserva, se distribuyen los ingresos
-// a donde corresponde (transporte, decoración, otros y el resto a mobiliario).
-async function calcularDesglose(fechaInicio, fechaFin) {
-  const pagosPeriodoRes = await db.query(
-    `SELECT id, reserva_id, monto, creado_en 
-     FROM pagos 
-     WHERE creado_en >= $1::date AND creado_en < $2::date + 1 
-     ORDER BY creado_en ASC, id ASC`,
-    [fechaInicio, fechaFin]
-  );
+    // Función para calcular ingresos y desglose por categoría de las reservas del período:
+    // Regla: Los abonos se cargan a mobiliario (no se reparten a transporte ni decoración).
+    // Solo cuando se cancela el saldo completo de la reserva, se distribuyen los ingresos
+    // a donde corresponde (transporte, decoración, otros y el resto a mobiliario).
+    async function calcularIngresosYDesglose(fInicio, fFin) {
+      const reservasPeriodoRes = await db.query(
+        `SELECT id, total FROM reservas 
+         WHERE fecha_inicio >= $1::date AND fecha_inicio < $2::date + 1 
+           AND estado != 'cancelada'`,
+        [fInicio, fFin]
+      );
 
-  if (pagosPeriodoRes.rows.length === 0) {
-    return { mobiliario: 0, transporte: 0, decoracion: 0, otros: 0 };
-  }
+      const reservaIds = reservasPeriodoRes.rows.map(r => r.id);
+      let totalIngresos = 0;
+      let desglose = { total_reservado: 0, mobiliario: 0, transporte: 0, decoracion: 0, otros: 0 };
 
-  const pagosPeriodo = pagosPeriodoRes.rows;
-  const reservaIds = [...new Set(pagosPeriodo.map(p => p.reserva_id))];
-
-  const [reservasRes, itemsRes, todosPagosRes] = await Promise.all([
-    db.query('SELECT id, total FROM reservas WHERE id = ANY($1)', [reservaIds]),
-    db.query('SELECT reserva_id, mueble_id, combo_id, nombre, subtotal FROM reserva_items WHERE reserva_id = ANY($1)', [reservaIds]),
-    db.query('SELECT id, reserva_id, monto, creado_en FROM pagos WHERE reserva_id = ANY($1) ORDER BY creado_en ASC, id ASC', [reservaIds])
-  ]);
-
-  const itemsPorReserva = {};
-  for (const item of itemsRes.rows) {
-    if (!itemsPorReserva[item.reserva_id]) {
-      itemsPorReserva[item.reserva_id] = { mobiliario: 0, transporte: 0, decoracion: 0, otros: 0 };
-    }
-    const subtotal = parseFloat(item.subtotal || 0);
-    const nombre = (item.nombre || '').toLowerCase();
-    if (item.mueble_id !== null || item.combo_id !== null) {
-      itemsPorReserva[item.reserva_id].mobiliario += subtotal;
-    } else if (nombre.includes('transporte') || nombre.includes('flete') || nombre.includes('envio') || nombre.includes('envío')) {
-      itemsPorReserva[item.reserva_id].transporte += subtotal;
-    } else if (nombre.includes('decorac')) {
-      itemsPorReserva[item.reserva_id].decoracion += subtotal;
-    } else {
-      itemsPorReserva[item.reserva_id].otros += subtotal;
-    }
-  }
-
-  const reservasMap = {};
-  for (const r of reservasRes.rows) {
-    reservasMap[r.id] = parseFloat(r.total || 0);
-  }
-
-  const pagosPorReserva = {};
-  for (const p of todosPagosRes.rows) {
-    if (!pagosPorReserva[p.reserva_id]) pagosPorReserva[p.reserva_id] = [];
-    pagosPorReserva[p.reserva_id].push({
-      id: p.id,
-      monto: parseFloat(p.monto || 0),
-      creado_en: p.creado_en
-    });
-  }
-
-  const pagosPeriodoIds = new Set(pagosPeriodo.map(p => p.id));
-  let totalMobiliario = 0, totalTransporte = 0, totalDecoracion = 0, totalOtros = 0;
-
-  for (const reservaId of reservaIds) {
-    const totalReserva = reservasMap[reservaId] || 0;
-    const items = itemsPorReserva[reservaId] || { mobiliario: totalReserva, transporte: 0, decoracion: 0, otros: 0 };
-    const pagosReserva = pagosPorReserva[reservaId] || [];
-
-    let cumPagado = 0;
-    let prevAllocatedMob = 0, prevAllocatedTrans = 0, prevAllocatedDeco = 0, prevAllocatedOtros = 0;
-
-    for (const p of pagosReserva) {
-      const montoPago = p.monto;
-      cumPagado += montoPago;
-      const saldoCancelado = (cumPagado >= totalReserva - 0.001);
-
-      let pMob = 0, pTrans = 0, pDeco = 0, pOtros = 0;
-      if (!saldoCancelado) {
-        // Es un abono: se carga íntegramente a mobiliario (nada a transporte ni decoración)
-        pMob = montoPago;
-        pTrans = 0;
-        pDeco = 0;
-        pOtros = 0;
-      } else {
-        // Se cancela el saldo: se distribuye donde corresponde
-        const faltaTrans = Math.max(0, items.transporte - prevAllocatedTrans);
-        const faltaDeco = Math.max(0, items.decoracion - prevAllocatedDeco);
-        const faltaOtros = Math.max(0, items.otros - prevAllocatedOtros);
-
-        let rem = montoPago;
-        pTrans = Math.min(rem, faltaTrans);
-        rem -= pTrans;
-
-        pDeco = Math.min(rem, faltaDeco);
-        rem -= pDeco;
-
-        pOtros = Math.min(rem, faltaOtros);
-        rem -= pOtros;
-
-        pMob = rem;
+      if (reservaIds.length === 0) {
+        return { totalIngresos: 0, desglose };
       }
 
-      prevAllocatedMob += pMob;
-      prevAllocatedTrans += pTrans;
-      prevAllocatedDeco += pDeco;
-      prevAllocatedOtros += pOtros;
+      const [itemsRes, pagosRes] = await Promise.all([
+        db.query('SELECT reserva_id, mueble_id, combo_id, nombre, subtotal FROM reserva_items WHERE reserva_id = ANY($1)', [reservaIds]),
+        db.query('SELECT id, reserva_id, monto FROM pagos WHERE reserva_id = ANY($1)', [reservaIds])
+      ]);
 
-      if (pagosPeriodoIds.has(p.id)) {
-        totalMobiliario += pMob;
-        totalTransporte += pTrans;
-        totalDecoracion += pDeco;
-        totalOtros += pOtros;
+      const itemsPorReserva = {};
+      for (const item of itemsRes.rows) {
+        if (!itemsPorReserva[item.reserva_id]) {
+          itemsPorReserva[item.reserva_id] = { mobiliario: 0, transporte: 0, decoracion: 0, otros: 0 };
+        }
+        const subtotal = parseFloat(item.subtotal || 0);
+        const nombre = (item.nombre || '').toLowerCase();
+        if (item.mueble_id !== null || item.combo_id !== null) {
+          itemsPorReserva[item.reserva_id].mobiliario += subtotal;
+        } else if (nombre.includes('transporte') || nombre.includes('flete') || nombre.includes('envio') || nombre.includes('envío')) {
+          itemsPorReserva[item.reserva_id].transporte += subtotal;
+        } else if (nombre.includes('decorac')) {
+          itemsPorReserva[item.reserva_id].decoracion += subtotal;
+        } else {
+          itemsPorReserva[item.reserva_id].otros += subtotal;
+        }
       }
-    }
-  }
 
-  return {
-    mobiliario: totalMobiliario,
-    transporte: totalTransporte,
-    decoracion: totalDecoracion,
-    otros: totalOtros
-  };
-}
+      const pagosPorReserva = {};
+      for (const p of pagosRes.rows) {
+        if (!pagosPorReserva[p.reserva_id]) pagosPorReserva[p.reserva_id] = [];
+        pagosPorReserva[p.reserva_id].push(parseFloat(p.monto || 0));
+      }
+
+      for (const r of reservasPeriodoRes.rows) {
+        const totalReserva = parseFloat(r.total || 0);
+        const items = itemsPorReserva[r.id] || { mobiliario: totalReserva, transporte: 0, decoracion: 0, otros: 0 };
+        const pagos = pagosPorReserva[r.id] || [];
+
+        const pagadoEnReserva = pagos.reduce((s, m) => s + m, 0);
+        totalIngresos += pagadoEnReserva;
+
+        const saldoCancelado = (pagadoEnReserva >= totalReserva - 0.001);
+
+        if (!saldoCancelado) {
+          // Es un abono: se carga íntegramente a mobiliario (nada a transporte ni decoración)
+          desglose.mobiliario += pagadoEnReserva;
+        } else {
+          // Se cancela el saldo: se distribuye donde corresponde
+          desglose.transporte += items.transporte;
+          desglose.decoracion += items.decoracion;
+          desglose.otros += items.otros;
+          desglose.mobiliario += Math.max(0, pagadoEnReserva - items.transporte - items.decoracion - items.otros);
+        }
+      }
+
+      desglose.total_reservado = desglose.mobiliario + desglose.transporte + desglose.decoracion + desglose.otros;
+      return { totalIngresos, desglose };
+    }
 
     const [
       resReservas,
-      resIngresos,
       resArtMuebles,
       resArtCombos,
       resTopMuebles,
       resTopCombos,
       resGananciasDiarias,
       resGananciasMensuales,
-      resDesglose
+      resCalculo
     ] = await Promise.all([
       db.query(queryReservas, [fechaInicio, fechaFin]),
-      db.query(queryIngresos, [fechaInicio, fechaFin]),
       db.query(queryArticulosMuebles, [fechaInicio, fechaFin]),
       db.query(queryArticulosCombos, [fechaInicio, fechaFin]),
       db.query(queryTopMuebles, [fechaInicio, fechaFin]),
       db.query(queryTopCombos, [fechaInicio, fechaFin]),
       db.query(queryGananciasDiarias, [fechaInicio, fechaFin]),
       db.query(queryGananciasMensualesGenerales),
-      calcularDesglose(fechaInicio, fechaFin)
+      calcularIngresosYDesglose(fechaInicio, fechaFin)
     ]);
 
     const totalReservas = parseInt(resReservas.rows[0].count);
-    const totalIngresos = parseFloat(resIngresos.rows[0].total);
+    const totalIngresos = resCalculo.totalIngresos;
     const totalArticulos = parseInt(resArtMuebles.rows[0].total) + parseInt(resArtCombos.rows[0].total);
-
-    const rowDesglose = resDesglose;
-    const ingresoMobiliario = parseFloat(rowDesglose.mobiliario || 0);
-    const ingresoTransporte = parseFloat(rowDesglose.transporte || 0);
-    const ingresoDecoracion = parseFloat(rowDesglose.decoracion || 0);
-    const ingresoOtros = parseFloat(rowDesglose.otros || 0);
-    const totalReservado = ingresoMobiliario + ingresoTransporte + ingresoDecoracion + ingresoOtros;
+    const desglose = resCalculo.desglose;
     
     res.json({
       fecha_inicio: fechaInicio,
@@ -330,13 +269,7 @@ async function calcularDesglose(fechaInicio, fechaFin) {
       top_combos: resTopCombos.rows.map(r => ({ nombre: r.nombre, total: parseInt(r.total_alquilado) })),
       ganancias_diarias: resGananciasDiarias.rows.map(r => ({ fecha: r.fecha, total: parseFloat(r.total) })),
       ganancias_mensuales_generales: resGananciasMensuales.rows.map(r => ({ anio: r.anio, mes: r.mes, total: parseFloat(r.total) })),
-      desglose: {
-        total_reservado: totalReservado,
-        mobiliario: ingresoMobiliario,
-        transporte: ingresoTransporte,
-        decoracion: ingresoDecoracion,
-        otros: ingresoOtros
-      }
+      desglose: desglose
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
