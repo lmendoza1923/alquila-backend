@@ -107,7 +107,7 @@ router.post('/', async (req, res) => {
     await client.query('BEGIN');
     const {
       fecha_inicio, fecha_fin,
-      alias_cliente, nombre_cliente, email_cliente, telefono_cliente,
+      alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente,
       direccion_entrega, notas, items
     } = req.body;
 
@@ -210,9 +210,9 @@ router.post('/', async (req, res) => {
     }
 
     const resReserva = await client.query(
-      `INSERT INTO reservas (fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total, estado)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-      [fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total.toFixed(2), 'activa']
+      `INSERT INTO reservas (fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total, estado)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente ? cedula_cliente.trim() : null, email_cliente, telefono_cliente, direccion_entrega, notas, total.toFixed(2), 'activa']
     );
     const reserva = resReserva.rows[0];
 
@@ -403,7 +403,7 @@ router.put('/:id', admin, async (req, res) => {
     await client.query('BEGIN');
     const {
       fecha_inicio, fecha_fin,
-      alias_cliente, nombre_cliente, email_cliente, telefono_cliente,
+      alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente,
       direccion_entrega, notas, estado, total
     } = req.body;
 
@@ -422,10 +422,10 @@ router.put('/:id', admin, async (req, res) => {
 
     const result = await client.query(
       `UPDATE reservas 
-       SET fecha_inicio=$1, fecha_fin=$2, alias_cliente=$3, nombre_cliente=$4, email_cliente=$5, 
-           telefono_cliente=$6, direccion_entrega=$7, notas=$8, estado=$9, total=$10
-       WHERE id=$11 RETURNING *`,
-      [fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, estado, total, req.params.id]
+       SET fecha_inicio=$1, fecha_fin=$2, alias_cliente=$3, nombre_cliente=$4, cedula_cliente=$5, email_cliente=$6, 
+           telefono_cliente=$7, direccion_entrega=$8, notas=$9, estado=$10, total=$11
+       WHERE id=$12 RETURNING *`,
+      [fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente !== undefined ? (cedula_cliente ? cedula_cliente.trim() : null) : reservaRes.rows[0].cedula_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, estado, total, req.params.id]
     );
     const reservaActualizada = result.rows[0];
 
