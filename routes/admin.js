@@ -164,43 +164,128 @@ router.get('/reportes', admin, async (req, res) => {
       ORDER BY anio, mes
     `;
 
-    // Query 8: Desglose de ingresos por categoría (proporcional a los pagos recibidos en el período)
-    const queryDesglose = `
-      SELECT 
-        COALESCE(SUM(
-          CASE 
-            WHEN ri.mueble_id IS NOT NULL OR ri.combo_id IS NOT NULL 
-            THEN ri.subtotal * (p.monto / r.total) 
-            ELSE 0 
-          END
-        ), 0) AS mobiliario,
-        COALESCE(SUM(
-          CASE 
-            WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND (ri.nombre ILIKE '%transporte%' OR ri.nombre ILIKE '%flete%' OR ri.nombre ILIKE '%envio%' OR ri.nombre ILIKE '%envío%') 
-            THEN ri.subtotal * (p.monto / r.total) 
-            ELSE 0 
-          END
-        ), 0) AS transporte,
-        COALESCE(SUM(
-          CASE 
-            WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND ri.nombre ILIKE '%decorac%' 
-            THEN ri.subtotal * (p.monto / r.total) 
-            ELSE 0 
-          END
-        ), 0) AS decoracion,
-        COALESCE(SUM(
-          CASE 
-            WHEN ri.mueble_id IS NULL AND ri.combo_id IS NULL AND NOT (ri.nombre ILIKE '%transporte%' OR ri.nombre ILIKE '%flete%' OR ri.nombre ILIKE '%envio%' OR ri.nombre ILIKE '%envío%' OR ri.nombre ILIKE '%decorac%') 
-            THEN ri.subtotal * (p.monto / r.total) 
-            ELSE 0 
-          END
-        ), 0) AS otros
-      FROM pagos p
-      JOIN reservas r ON r.id = p.reserva_id
-      JOIN reserva_items ri ON ri.reserva_id = r.id
-      WHERE p.creado_en >= $1::date AND p.creado_en < $2::date + 1
-        AND r.total > 0
-    `;
+// Función para calcular el desglose de ingresos por categoría:
+// Regla: Los abonos se cargan a mobiliario (no se reparten a transporte ni decoración).
+// Solo cuando se cancela el saldo completo de la reserva, se distribuyen los ingresos
+// a donde corresponde (transporte, decoración, otros y el resto a mobiliario).
+async function calcularDesglose(fechaInicio, fechaFin) {
+  const pagosPeriodoRes = await db.query(
+    `SELECT id, reserva_id, monto, creado_en 
+     FROM pagos 
+     WHERE creado_en >= $1::date AND creado_en < $2::date + 1 
+     ORDER BY creado_en ASC, id ASC`,
+    [fechaInicio, fechaFin]
+  );
+
+  if (pagosPeriodoRes.rows.length === 0) {
+    return { mobiliario: 0, transporte: 0, decoracion: 0, otros: 0 };
+  }
+
+  const pagosPeriodo = pagosPeriodoRes.rows;
+  const reservaIds = [...new Set(pagosPeriodo.map(p => p.reserva_id))];
+
+  const [reservasRes, itemsRes, todosPagosRes] = await Promise.all([
+    db.query('SELECT id, total FROM reservas WHERE id = ANY($1)', [reservaIds]),
+    db.query('SELECT reserva_id, mueble_id, combo_id, nombre, subtotal FROM reserva_items WHERE reserva_id = ANY($1)', [reservaIds]),
+    db.query('SELECT id, reserva_id, monto, creado_en FROM pagos WHERE reserva_id = ANY($1) ORDER BY creado_en ASC, id ASC', [reservaIds])
+  ]);
+
+  const itemsPorReserva = {};
+  for (const item of itemsRes.rows) {
+    if (!itemsPorReserva[item.reserva_id]) {
+      itemsPorReserva[item.reserva_id] = { mobiliario: 0, transporte: 0, decoracion: 0, otros: 0 };
+    }
+    const subtotal = parseFloat(item.subtotal || 0);
+    const nombre = (item.nombre || '').toLowerCase();
+    if (item.mueble_id !== null || item.combo_id !== null) {
+      itemsPorReserva[item.reserva_id].mobiliario += subtotal;
+    } else if (nombre.includes('transporte') || nombre.includes('flete') || nombre.includes('envio') || nombre.includes('envío')) {
+      itemsPorReserva[item.reserva_id].transporte += subtotal;
+    } else if (nombre.includes('decorac')) {
+      itemsPorReserva[item.reserva_id].decoracion += subtotal;
+    } else {
+      itemsPorReserva[item.reserva_id].otros += subtotal;
+    }
+  }
+
+  const reservasMap = {};
+  for (const r of reservasRes.rows) {
+    reservasMap[r.id] = parseFloat(r.total || 0);
+  }
+
+  const pagosPorReserva = {};
+  for (const p of todosPagosRes.rows) {
+    if (!pagosPorReserva[p.reserva_id]) pagosPorReserva[p.reserva_id] = [];
+    pagosPorReserva[p.reserva_id].push({
+      id: p.id,
+      monto: parseFloat(p.monto || 0),
+      creado_en: p.creado_en
+    });
+  }
+
+  const pagosPeriodoIds = new Set(pagosPeriodo.map(p => p.id));
+  let totalMobiliario = 0, totalTransporte = 0, totalDecoracion = 0, totalOtros = 0;
+
+  for (const reservaId of reservaIds) {
+    const totalReserva = reservasMap[reservaId] || 0;
+    const items = itemsPorReserva[reservaId] || { mobiliario: totalReserva, transporte: 0, decoracion: 0, otros: 0 };
+    const pagosReserva = pagosPorReserva[reservaId] || [];
+
+    let cumPagado = 0;
+    let prevAllocatedMob = 0, prevAllocatedTrans = 0, prevAllocatedDeco = 0, prevAllocatedOtros = 0;
+
+    for (const p of pagosReserva) {
+      const montoPago = p.monto;
+      cumPagado += montoPago;
+      const saldoCancelado = (cumPagado >= totalReserva - 0.001);
+
+      let pMob = 0, pTrans = 0, pDeco = 0, pOtros = 0;
+      if (!saldoCancelado) {
+        // Es un abono: se carga íntegramente a mobiliario (nada a transporte ni decoración)
+        pMob = montoPago;
+        pTrans = 0;
+        pDeco = 0;
+        pOtros = 0;
+      } else {
+        // Se cancela el saldo: se distribuye donde corresponde
+        const faltaTrans = Math.max(0, items.transporte - prevAllocatedTrans);
+        const faltaDeco = Math.max(0, items.decoracion - prevAllocatedDeco);
+        const faltaOtros = Math.max(0, items.otros - prevAllocatedOtros);
+
+        let rem = montoPago;
+        pTrans = Math.min(rem, faltaTrans);
+        rem -= pTrans;
+
+        pDeco = Math.min(rem, faltaDeco);
+        rem -= pDeco;
+
+        pOtros = Math.min(rem, faltaOtros);
+        rem -= pOtros;
+
+        pMob = rem;
+      }
+
+      prevAllocatedMob += pMob;
+      prevAllocatedTrans += pTrans;
+      prevAllocatedDeco += pDeco;
+      prevAllocatedOtros += pOtros;
+
+      if (pagosPeriodoIds.has(p.id)) {
+        totalMobiliario += pMob;
+        totalTransporte += pTrans;
+        totalDecoracion += pDeco;
+        totalOtros += pOtros;
+      }
+    }
+  }
+
+  return {
+    mobiliario: totalMobiliario,
+    transporte: totalTransporte,
+    decoracion: totalDecoracion,
+    otros: totalOtros
+  };
+}
 
     const [
       resReservas,
@@ -221,14 +306,14 @@ router.get('/reportes', admin, async (req, res) => {
       db.query(queryTopCombos, [fechaInicio, fechaFin]),
       db.query(queryGananciasDiarias, [fechaInicio, fechaFin]),
       db.query(queryGananciasMensualesGenerales),
-      db.query(queryDesglose, [fechaInicio, fechaFin])
+      calcularDesglose(fechaInicio, fechaFin)
     ]);
 
     const totalReservas = parseInt(resReservas.rows[0].count);
     const totalIngresos = parseFloat(resIngresos.rows[0].total);
     const totalArticulos = parseInt(resArtMuebles.rows[0].total) + parseInt(resArtCombos.rows[0].total);
 
-    const rowDesglose = resDesglose.rows[0];
+    const rowDesglose = resDesglose;
     const ingresoMobiliario = parseFloat(rowDesglose.mobiliario || 0);
     const ingresoTransporte = parseFloat(rowDesglose.transporte || 0);
     const ingresoDecoracion = parseFloat(rowDesglose.decoracion || 0);
