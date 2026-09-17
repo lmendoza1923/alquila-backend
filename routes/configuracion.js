@@ -1,4 +1,4 @@
-﻿const router = require('express').Router();
+const router = require('express').Router();
 const db = require('../db');
 const { admin } = require('../middleware/auth');
 
@@ -22,13 +22,14 @@ router.put('/', admin, async (req, res) => {
     const entries = Object.entries(req.body);
     for (const [clave, valor] of entries) {
       await db.query(
-        INSERT INTO configuracion (clave, valor) VALUES (, )
-         ON CONFLICT (clave) DO UPDATE SET valor = ,
+        `INSERT INTO configuracion (clave, valor) VALUES ($1, $2)
+         ON CONFLICT (clave) DO UPDATE SET valor = $2`,
         [clave, String(valor || '')]
       );
     }
     res.json({ ok: true, message: 'Configuración actualizada' });
   } catch (err) {
+    console.error('Error al guardar configuracion:', err);
     res.status(500).json({ error: err.message });
   }
 });
