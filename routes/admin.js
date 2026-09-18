@@ -173,10 +173,20 @@ router.get('/reportes', admin, async (req, res) => {
 
       const reservaIds = reservasPeriodoRes.rows.map(r => r.id);
       let totalIngresos = 0;
-      let desglose = { total_reservado: 0, mobiliario: 0, transporte: 0, decoracion: 0, otros: 0 };
+      let totalBrutoReservas = 0;
+      let desgloseRecibido = { total_recibido: 0, total_reservado: 0, mobiliario: 0, transporte: 0, decoracion: 0, otros: 0 };
+      let desgloseBruto = { total_bruto: 0, mobiliario: 0, transporte: 0, decoracion: 0, otros: 0 };
 
       if (reservaIds.length === 0) {
-        return { totalIngresos: 0, desglose };
+        return {
+          totalIngresos: 0,
+          totalBrutoReservas: 0,
+          saldoPendiente: 0,
+          porcentajeRecaudado: 0,
+          desglose: desgloseRecibido,
+          desgloseRecibido,
+          desgloseBruto
+        };
       }
 
       const [itemsRes, pagosRes] = await Promise.all([
@@ -210,9 +220,17 @@ router.get('/reportes', admin, async (req, res) => {
 
       for (const r of reservasPeriodoRes.rows) {
         const totalReserva = parseFloat(r.total || 0);
-        const items = itemsPorReserva[r.id] || { mobiliario: totalReserva, transporte: 0, decoracion: 0, otros: 0 };
-        const pagos = pagosPorReserva[r.id] || [];
+        totalBrutoReservas += totalReserva;
 
+        const items = itemsPorReserva[r.id] || { mobiliario: totalReserva, transporte: 0, decoracion: 0, otros: 0 };
+
+        // Acumular al desglose bruto pactado en reservas
+        desgloseBruto.mobiliario += items.mobiliario;
+        desgloseBruto.transporte += items.transporte;
+        desgloseBruto.decoracion += items.decoracion;
+        desgloseBruto.otros += items.otros;
+
+        const pagos = pagosPorReserva[r.id] || [];
         const pagadoEnReserva = pagos.reduce((s, m) => s + m, 0);
         totalIngresos += pagadoEnReserva;
 
@@ -220,18 +238,32 @@ router.get('/reportes', admin, async (req, res) => {
 
         if (!saldoCancelado) {
           // Es un abono: se carga íntegramente a mobiliario (nada a transporte ni decoración)
-          desglose.mobiliario += pagadoEnReserva;
+          desgloseRecibido.mobiliario += pagadoEnReserva;
         } else {
           // Se cancela el saldo: se distribuye donde corresponde
-          desglose.transporte += items.transporte;
-          desglose.decoracion += items.decoracion;
-          desglose.otros += items.otros;
-          desglose.mobiliario += Math.max(0, pagadoEnReserva - items.transporte - items.decoracion - items.otros);
+          desgloseRecibido.transporte += items.transporte;
+          desgloseRecibido.decoracion += items.decoracion;
+          desgloseRecibido.otros += items.otros;
+          desgloseRecibido.mobiliario += Math.max(0, pagadoEnReserva - items.transporte - items.decoracion - items.otros);
         }
       }
 
-      desglose.total_reservado = desglose.mobiliario + desglose.transporte + desglose.decoracion + desglose.otros;
-      return { totalIngresos, desglose };
+      desgloseBruto.total_bruto = totalBrutoReservas;
+      desgloseRecibido.total_recibido = desgloseRecibido.mobiliario + desgloseRecibido.transporte + desgloseRecibido.decoracion + desgloseRecibido.otros;
+      desgloseRecibido.total_reservado = desgloseRecibido.total_recibido;
+
+      const saldoPendiente = Math.max(0, totalBrutoReservas - totalIngresos);
+      const porcentajeRecaudado = totalBrutoReservas > 0 ? (totalIngresos / totalBrutoReservas) * 100 : 0;
+
+      return {
+        totalIngresos,
+        totalBrutoReservas,
+        saldoPendiente,
+        porcentajeRecaudado,
+        desglose: desgloseRecibido,
+        desgloseRecibido,
+        desgloseBruto
+      };
     }
 
     const [
@@ -256,20 +288,30 @@ router.get('/reportes', admin, async (req, res) => {
 
     const totalReservas = parseInt(resReservas.rows[0].count);
     const totalIngresos = resCalculo.totalIngresos;
+    const totalBrutoReservas = resCalculo.totalBrutoReservas;
+    const saldoPendiente = resCalculo.saldoPendiente;
+    const porcentajeRecaudado = resCalculo.porcentajeRecaudado;
     const totalArticulos = parseInt(resArtMuebles.rows[0].total) + parseInt(resArtCombos.rows[0].total);
     const desglose = resCalculo.desglose;
+    const desgloseBruto = resCalculo.desgloseBruto;
+    const desgloseRecibido = resCalculo.desgloseRecibido;
     
     res.json({
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
       total_reservas: totalReservas,
+      total_bruto_reservas: totalBrutoReservas,
       total_ingresos: totalIngresos,
+      saldo_pendiente: saldoPendiente,
+      porcentaje_recaudado: porcentajeRecaudado,
       total_articulos: totalArticulos,
       top_muebles: resTopMuebles.rows.map(r => ({ nombre: r.nombre, total: parseInt(r.total_alquilado) })),
       top_combos: resTopCombos.rows.map(r => ({ nombre: r.nombre, total: parseInt(r.total_alquilado) })),
       ganancias_diarias: resGananciasDiarias.rows.map(r => ({ fecha: r.fecha, total: parseFloat(r.total) })),
       ganancias_mensuales_generales: resGananciasMensuales.rows.map(r => ({ anio: r.anio, mes: r.mes, total: parseFloat(r.total) })),
-      desglose: desglose
+      desglose: desglose,
+      desglose_recibido: desgloseRecibido,
+      desglose_bruto: desgloseBruto
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
