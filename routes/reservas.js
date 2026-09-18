@@ -3,6 +3,7 @@ const db = require('../db');
 const { auth, admin } = require('../middleware/auth');
 const nodemailer = require('nodemailer');
 const googleCalendar = require('../services/googleCalendar');
+const { validarDisponibilidadItems } = require('../utils/disponibilidad');
 
 const mailer = nodemailer.createTransport({
   host: process.env.EMAIL_HOST,
@@ -35,44 +36,9 @@ async function enviarConfirmacion(reserva, items) {
   });
 }
 
-// Ayudante para modificar stock de muebles en base a un item de reserva
+// Ayudante de compatibilidad: el inventario ahora se calcula dinámicamente por calendario
 async function actualizarStockItem(client, item, accion) {
-  const factor = accion === 'sumar' ? 1 : -1;
-  
-  if (item.combo_id) {
-    let componentes = [];
-    if (item.componentes && item.componentes.length > 0) {
-      componentes = item.componentes;
-    } else if (item.reserva_id) {
-      const resRci = await client.query(
-        'SELECT mueble_id, cantidad FROM reserva_combo_items WHERE reserva_id = $1 AND combo_id = $2',
-        [item.reserva_id, item.combo_id]
-      );
-      if (resRci.rows.length > 0) {
-        componentes = resRci.rows;
-      }
-    }
-    
-    if (componentes.length === 0) {
-      const resCi = await client.query('SELECT mueble_id, cantidad FROM combo_items WHERE combo_id = $1', [item.combo_id]);
-      componentes = resCi.rows;
-    }
-
-    for (const comp of componentes) {
-      const cantidadTotal = (parseInt(comp.cantidad) || 1) * (parseInt(item.cantidad) || 1);
-      if (comp.mueble_id) {
-        await client.query(
-          'UPDATE muebles SET stock = stock + $1 WHERE id = $2',
-          [cantidadTotal * factor, comp.mueble_id]
-        );
-      }
-    }
-  } else if (item.mueble_id) {
-    await client.query(
-      'UPDATE muebles SET stock = stock + $1 WHERE id = $2',
-      [(parseInt(item.cantidad) || 1) * factor, item.mueble_id]
-    );
-  }
+  return;
 }
 
 // Procesar y actualizar items de una reserva dentro de una transacción activa
@@ -85,7 +51,12 @@ async function procesarYActualizarItemsReserva(client, reservaId, items, reqTota
   await client.query('DELETE FROM reserva_items WHERE reserva_id = $1', [reservaId]);
   await client.query('DELETE FROM reserva_combo_items WHERE reserva_id = $1', [reservaId]);
 
-  // 2. Procesar nuevos items
+  // 2. Validar disponibilidad dinámica en las fechas seleccionadas si la reserva es vigente
+  if (esVigenteNuevo) {
+    await validarDisponibilidadItems(client, items, fechaInicio, fechaFin, reservaId);
+  }
+
+  // 3. Procesar nuevos items
   const dias = Math.ceil((new Date(fechaFin) - new Date(fechaInicio)) / 86400000) + 1;
   let nuevoTotal = 0;
   const itemsProcesados = [];
@@ -96,7 +67,7 @@ async function procesarYActualizarItemsReserva(client, reservaId, items, reqTota
       if (!comboRes.rows.length) throw new Error(`Combo ${item.combo_id} no encontrado`);
       const combo = comboRes.rows[0];
 
-      // Determinar componentes a verificar y guardar
+      // Determinar componentes a guardar
       let componentesParaGuardar = [];
       if (item.componentes && item.componentes.length > 0) {
         componentesParaGuardar = item.componentes;
@@ -106,23 +77,6 @@ async function procesarYActualizarItemsReserva(client, reservaId, items, reqTota
           [combo.id]
         );
         componentesParaGuardar = standardComps.rows;
-      }
-
-      // Validar disponibilidad si la reserva está vigente
-      if (esVigenteNuevo) {
-        for (const comp of componentesParaGuardar) {
-          const muebleRes = await client.query('SELECT id, nombre, stock FROM muebles WHERE id = $1', [comp.mueble_id]);
-          if (!muebleRes.rows.length) {
-            throw new Error(`Mueble no encontrado para el combo "${combo.nombre}"`);
-          }
-          const m = muebleRes.rows[0];
-          const cantidadNecesaria = (parseInt(comp.cantidad) || 1) * (parseInt(item.cantidad) || 1);
-          if (m.stock < cantidadNecesaria) {
-            throw new Error(
-              `Stock insuficiente de "${m.nombre}" para el combo "${combo.nombre}". Requeridas: ${cantidadNecesaria}, Disponibles: ${m.stock}`
-            );
-          }
-        }
       }
 
       let precio;
@@ -150,10 +104,6 @@ async function procesarYActualizarItemsReserva(client, reservaId, items, reqTota
       const mueble = await client.query('SELECT * FROM muebles WHERE id = $1', [item.mueble_id]);
       if (!mueble.rows.length) throw new Error(`Mueble ${item.mueble_id} no encontrado`);
       const m = mueble.rows[0];
-
-      if (esVigenteNuevo && m.stock < (parseInt(item.cantidad) || 1)) {
-        throw new Error(`Stock insuficiente de "${m.nombre}". Disponibles: ${m.stock}`);
-      }
 
       let precio;
       if (item.precio_unitario !== undefined && item.precio_unitario !== null && !isNaN(item.precio_unitario)) {
@@ -190,7 +140,7 @@ async function procesarYActualizarItemsReserva(client, reservaId, items, reqTota
     }
   }
 
-  // 3. Registrar nuevos items e impactar stock
+  // 4. Registrar nuevos items en base de datos
   for (const item of itemsProcesados) {
     await client.query(
       'INSERT INTO reserva_items (reserva_id, mueble_id, combo_id, cantidad, precio_unitario, subtotal, nombre) VALUES ($1,$2,$3,$4,$5,$6,$7)',
@@ -204,10 +154,6 @@ async function procesarYActualizarItemsReserva(client, reservaId, items, reqTota
           [reservaId, item.combo_id, comp.mueble_id, comp.cantidad]
         );
       }
-    }
-
-    if (esVigenteNuevo) {
-      await actualizarStockItem(client, { ...item, reserva_id: reservaId }, 'restar');
     }
   }
 
@@ -271,6 +217,9 @@ router.post('/', async (req, res) => {
     if (!items || !items.length)
       return res.status(400).json({ error: 'Debe incluir al menos un mueble o combo' });
 
+    // Validar disponibilidad por rango de fechas
+    await validarDisponibilidadItems(client, items, fecha_inicio, fecha_fin, null);
+
     // Calcular total
     let total = 0;
     const dias = Math.ceil((new Date(fecha_fin) - new Date(fecha_inicio)) / 86400000) + 1;
@@ -282,24 +231,6 @@ router.post('/', async (req, res) => {
         const comboRes = await client.query('SELECT * FROM combos WHERE id = $1 AND activo = true', [item.combo_id]);
         if (!comboRes.rows.length) throw new Error(`Combo ${item.combo_id} no encontrado`);
         const combo = comboRes.rows[0];
-
-        // Verificar disponibilidad de componentes individuales
-        const componentes = await client.query(
-          `SELECT ci.*, m.nombre, m.stock 
-           FROM combo_items ci 
-           JOIN muebles m ON m.id = ci.mueble_id 
-           WHERE ci.combo_id = $1 AND m.activo = true`,
-          [combo.id]
-        );
-
-        for (const comp of componentes.rows) {
-          const cantidadNecesaria = comp.cantidad * item.cantidad;
-          if (comp.stock < cantidadNecesaria) {
-            throw new Error(
-              `Stock insuficiente de "${comp.nombre}" para el combo "${combo.nombre}". Requeridas: ${cantidadNecesaria}, Disponibles: ${comp.stock}`
-            );
-          }
-        }
 
         let precio;
         if (item.precio_unitario !== undefined && item.precio_unitario !== null && !isNaN(item.precio_unitario)) {
@@ -327,9 +258,6 @@ router.post('/', async (req, res) => {
         const mueble = await client.query('SELECT * FROM muebles WHERE id=$1 AND activo=true', [item.mueble_id]);
         if (!mueble.rows.length) throw new Error(`Mueble ${item.mueble_id} no encontrado`);
         const m = mueble.rows[0];
-
-        if (m.stock < item.cantidad)
-          throw new Error(`Solo hay ${m.stock} unidades disponibles de "${m.nombre}"`);
 
         let precio;
         if (item.precio_unitario !== undefined && item.precio_unitario !== null && !isNaN(item.precio_unitario)) {
@@ -397,9 +325,6 @@ router.post('/', async (req, res) => {
           }
         }
       }
-
-      // Decrementar stock físico de componentes / muebles individuales
-      await actualizarStockItem(client, { ...item, reserva_id: reserva.id }, 'restar');
     }
 
     await client.query('COMMIT');
@@ -588,15 +513,7 @@ router.put('/:id', admin, async (req, res) => {
     let itemsFinalesParaCalendario = null;
 
     if (items && Array.isArray(items) && items.length > 0) {
-      // 1. Revertir stock de items antiguos si la reserva estaba previamente vigente
-      if (vigenteAnterior) {
-        const antiguos = await client.query('SELECT * FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
-        for (const ant of antiguos.rows) {
-          await actualizarStockItem(client, { ...ant, reserva_id: req.params.id }, 'sumar');
-        }
-      }
-
-      // 2. Procesar e insertar nuevos items, validar stock y restar si es vigente
+      // Procesar e insertar nuevos items y validar disponibilidad dinámica
       const resultadoItems = await procesarYActualizarItemsReserva(
         client,
         req.params.id,
@@ -607,15 +524,6 @@ router.put('/:id', admin, async (req, res) => {
         vigenteNuevo
       );
       itemsFinalesParaCalendario = resultadoItems.itemsProcesados;
-    } else {
-      // Si NO se enviaron items pero cambió el estado de vigente a no-vigente o viceversa
-      if (vigenteAnterior !== vigenteNuevo) {
-        const itemsRes = await client.query('SELECT * FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
-        for (const item of itemsRes.rows) {
-          const accion = (vigenteAnterior && !vigenteNuevo) ? 'sumar' : 'restar';
-          await actualizarStockItem(client, { ...item, reserva_id: req.params.id }, accion);
-        }
-      }
     }
 
     const result = await client.query(
@@ -683,15 +591,7 @@ router.put('/:id/items', admin, async (req, res) => {
     const reserva = reservaRes.rows[0];
     const esVigente = ['pendiente', 'confirmada', 'activa'].includes(reserva.estado);
 
-    // 1. Si es vigente, revertir stock antiguo antes de borrar
-    if (esVigente) {
-      const antiguos = await client.query('SELECT * FROM reserva_items WHERE reserva_id = $1', [reservaId]);
-      for (const ant of antiguos.rows) {
-        await actualizarStockItem(client, { ...ant, reserva_id: reservaId }, 'sumar');
-      }
-    }
-
-    // 2. Procesar y actualizar items
+    // Procesar y actualizar items con disponibilidad dinámica
     const { itemsProcesados, finalTotal } = await procesarYActualizarItemsReserva(
       client,
       reservaId,
@@ -737,12 +637,7 @@ router.delete('/:id', admin, async (req, res) => {
     const googleEvtId = reservaRes.rows[0].google_event_id;
     const esVigente = ['pendiente', 'confirmada', 'activa'].includes(estadoActual);
 
-    if (esVigente) {
-      const itemsRes = await client.query('SELECT * FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
-      for (const item of itemsRes.rows) {
-        await actualizarStockItem(client, { ...item, reserva_id: req.params.id }, 'sumar');
-      }
-    }
+
 
     await client.query('DELETE FROM pagos WHERE reserva_id = $1', [req.params.id]);
     await client.query('DELETE FROM reserva_items WHERE reserva_id = $1', [req.params.id]);

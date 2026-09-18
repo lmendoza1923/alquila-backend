@@ -1,11 +1,12 @@
 const router = require('express').Router();
 const db = require('../db');
 const { admin } = require('../middleware/auth');
+const { obtenerStockComprometido } = require('../utils/disponibilidad');
 
-// Listar muebles (con filtros opcionales)
+// Listar muebles (con filtros opcionales y disponibilidad por fecha)
 router.get('/', async (req, res) => {
   try {
-    const { categoria, busqueda, todos } = req.query;
+    const { categoria, busqueda, todos, fecha_inicio, fecha_fin } = req.query;
     let query = `
       SELECT m.*, c.nombre AS categoria_nombre
       FROM muebles m
@@ -23,6 +24,24 @@ router.get('/', async (req, res) => {
     query += ' ORDER BY m.nombre';
 
     const result = await db.query(query, params);
+
+    if (fecha_inicio && fecha_fin) {
+      const mapa = await obtenerStockComprometido(db, fecha_inicio, fecha_fin);
+      const mueblesConDisponibilidad = result.rows.map(m => {
+        const stockTotal = parseInt(m.stock) || 0;
+        const comprometido = mapa[m.id] || 0;
+        const disponible = Math.max(0, stockTotal - comprometido);
+        return {
+          ...m,
+          stock_total: stockTotal,
+          reservado: comprometido,
+          stock_disponible: disponible,
+          stock: disponible
+        };
+      });
+      return res.json(mueblesConDisponibilidad);
+    }
+
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -48,12 +67,21 @@ router.get('/:id', async (req, res) => {
 // Verificar disponibilidad de un mueble en rango de fechas
 router.get('/:id/disponibilidad', async (req, res) => {
   try {
-    const { fecha_inicio, fecha_fin } = req.query;
-    const mueble = await db.query('SELECT stock FROM muebles WHERE id=$1', [req.params.id]);
+    const { fecha_inicio, fecha_fin, exclude_reserva_id } = req.query;
+    const mueble = await db.query('SELECT id, nombre, stock FROM muebles WHERE id=$1', [req.params.id]);
     if (!mueble.rows.length) return res.status(404).json({ error: 'Mueble no encontrado' });
 
-    const stock = mueble.rows[0].stock;
-    res.json({ disponible: stock, stock });
+    const m = mueble.rows[0];
+    const stockTotal = parseInt(m.stock) || 0;
+
+    if (fecha_inicio && fecha_fin) {
+      const mapa = await obtenerStockComprometido(db, fecha_inicio, fecha_fin, exclude_reserva_id || null);
+      const comprometido = mapa[m.id] || 0;
+      const disponible = Math.max(0, stockTotal - comprometido);
+      return res.json({ disponible, stock: disponible, stock_total: stockTotal, reservado: comprometido });
+    }
+
+    res.json({ disponible: stockTotal, stock: stockTotal, stock_total: stockTotal, reservado: 0 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

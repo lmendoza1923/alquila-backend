@@ -1,11 +1,12 @@
 const router = require('express').Router();
 const db = require('../db');
 const { admin } = require('../middleware/auth');
+const { obtenerStockComprometido } = require('../utils/disponibilidad');
 
-// Listar todos los combos (con filtro opcional)
+// Listar todos los combos (con filtro opcional y disponibilidad por fecha)
 router.get('/', async (req, res) => {
   try {
-    const { todos } = req.query;
+    const { todos, fecha_inicio, fecha_fin } = req.query;
     let whereClause = 'WHERE c.activo = true';
     if (todos === 'true') {
       whereClause = 'WHERE 1=1';
@@ -32,6 +33,29 @@ router.get('/', async (req, res) => {
       ORDER BY c.nombre;
     `;
     const result = await db.query(query);
+
+    if (fecha_inicio && fecha_fin) {
+      const mapa = await obtenerStockComprometido(db, fecha_inicio, fecha_fin);
+      const combosConDisponibilidad = result.rows.map(c => {
+        const itemsAjustados = (c.items || []).map(item => {
+          const stockTotal = parseInt(item.stock) || 0;
+          const comprometido = mapa[item.mueble_id] || 0;
+          const disponible = Math.max(0, stockTotal - comprometido);
+          return {
+            ...item,
+            stock_total: stockTotal,
+            reservado: comprometido,
+            stock: disponible
+          };
+        });
+        return {
+          ...c,
+          items: itemsAjustados
+        };
+      });
+      return res.json(combosConDisponibilidad);
+    }
+
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -41,6 +65,7 @@ router.get('/', async (req, res) => {
 // Detalle de un combo
 router.get('/:id', async (req, res) => {
   try {
+    const { fecha_inicio, fecha_fin, exclude_reserva_id } = req.query;
     const query = `
       SELECT c.*, 
              COALESCE(
@@ -62,7 +87,24 @@ router.get('/:id', async (req, res) => {
     `;
     const result = await db.query(query, [req.params.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'Combo no encontrado' });
-    res.json(result.rows[0]);
+
+    const combo = result.rows[0];
+    if (fecha_inicio && fecha_fin) {
+      const mapa = await obtenerStockComprometido(db, fecha_inicio, fecha_fin, exclude_reserva_id || null);
+      combo.items = (combo.items || []).map(item => {
+        const stockTotal = parseInt(item.stock) || 0;
+        const comprometido = mapa[item.mueble_id] || 0;
+        const disponible = Math.max(0, stockTotal - comprometido);
+        return {
+          ...item,
+          stock_total: stockTotal,
+          reservado: comprometido,
+          stock: disponible
+        };
+      });
+    }
+
+    res.json(combo);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
