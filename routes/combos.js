@@ -22,11 +22,11 @@ router.get('/', async (req, res) => {
                    'cantidad', ci.cantidad,
                    'stock', m.stock
                  )
-               ) FILTER (WHERE ci.id IS NOT NULL), '[]'
+               ) FILTER (WHERE ci.id IS NOT NULL AND m.id IS NOT NULL), '[]'
              ) AS items
       FROM combos c
       LEFT JOIN combo_items ci ON ci.combo_id = c.id
-      LEFT JOIN muebles m ON m.id = ci.mueble_id AND m.activo = true
+      LEFT JOIN muebles m ON m.id = ci.mueble_id
       ${whereClause}
       GROUP BY c.id
       ORDER BY c.nombre;
@@ -52,11 +52,11 @@ router.get('/:id', async (req, res) => {
                    'cantidad', ci.cantidad,
                    'stock', m.stock
                  )
-               ) FILTER (WHERE ci.id IS NOT NULL), '[]'
+               ) FILTER (WHERE ci.id IS NOT NULL AND m.id IS NOT NULL), '[]'
              ) AS items
       FROM combos c
       LEFT JOIN combo_items ci ON ci.combo_id = c.id
-      LEFT JOIN muebles m ON m.id = ci.mueble_id AND m.activo = true
+      LEFT JOIN muebles m ON m.id = ci.mueble_id
       WHERE c.id = $1
       GROUP BY c.id;
     `;

@@ -198,8 +198,13 @@ function buildEventBody(reserva) {
     `Dirección: ${reserva.direccion_entrega || 'N/A'}`
   ].join('\n');
 
-  const startStr = (reserva.fecha_inicio || '').substring(0, 10);
-  const endStr = (reserva.fecha_fin || reserva.fecha_inicio || '').substring(0, 10);
+  const toIsoDate = (v) => {
+    if (!v) return '';
+    if (v instanceof Date) return v.toISOString().substring(0, 10);
+    return String(v).substring(0, 10);
+  };
+  const startStr = toIsoDate(reserva.fecha_inicio);
+  const endStr = toIsoDate(reserva.fecha_fin || reserva.fecha_inicio);
 
   return {
     summary,

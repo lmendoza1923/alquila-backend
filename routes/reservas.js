@@ -40,27 +40,184 @@ async function actualizarStockItem(client, item, accion) {
   const factor = accion === 'sumar' ? 1 : -1;
   
   if (item.combo_id) {
-    // Check if we have custom components in reserva_combo_items
-    let componentes = await client.query(
-      'SELECT mueble_id, cantidad FROM reserva_combo_items WHERE reserva_id = $1 AND combo_id = $2',
-      [item.reserva_id, item.combo_id]
-    );
-    if (componentes.rows.length === 0) {
-      componentes = await client.query('SELECT mueble_id, cantidad FROM combo_items WHERE combo_id = $1', [item.combo_id]);
-    }
-    for (const comp of componentes.rows) {
-      const cantidadTotal = comp.cantidad * item.cantidad;
-      await client.query(
-        'UPDATE muebles SET stock = stock + $1 WHERE id = $2',
-        [cantidadTotal * factor, comp.mueble_id]
+    let componentes = [];
+    if (item.componentes && item.componentes.length > 0) {
+      componentes = item.componentes;
+    } else if (item.reserva_id) {
+      const resRci = await client.query(
+        'SELECT mueble_id, cantidad FROM reserva_combo_items WHERE reserva_id = $1 AND combo_id = $2',
+        [item.reserva_id, item.combo_id]
       );
+      if (resRci.rows.length > 0) {
+        componentes = resRci.rows;
+      }
+    }
+    
+    if (componentes.length === 0) {
+      const resCi = await client.query('SELECT mueble_id, cantidad FROM combo_items WHERE combo_id = $1', [item.combo_id]);
+      componentes = resCi.rows;
+    }
+
+    for (const comp of componentes) {
+      const cantidadTotal = (parseInt(comp.cantidad) || 1) * (parseInt(item.cantidad) || 1);
+      if (comp.mueble_id) {
+        await client.query(
+          'UPDATE muebles SET stock = stock + $1 WHERE id = $2',
+          [cantidadTotal * factor, comp.mueble_id]
+        );
+      }
     }
   } else if (item.mueble_id) {
     await client.query(
       'UPDATE muebles SET stock = stock + $1 WHERE id = $2',
-      [item.cantidad * factor, item.mueble_id]
+      [(parseInt(item.cantidad) || 1) * factor, item.mueble_id]
     );
   }
+}
+
+// Procesar y actualizar items de una reserva dentro de una transacción activa
+async function procesarYActualizarItemsReserva(client, reservaId, items, reqTotal, fechaInicio, fechaFin, esVigenteNuevo) {
+  if (!items || !items.length) {
+    throw new Error('La reserva debe tener al menos un mueble o combo');
+  }
+
+  // 1. Eliminar items anteriores de las tablas hijas
+  await client.query('DELETE FROM reserva_items WHERE reserva_id = $1', [reservaId]);
+  await client.query('DELETE FROM reserva_combo_items WHERE reserva_id = $1', [reservaId]);
+
+  // 2. Procesar nuevos items
+  const dias = Math.ceil((new Date(fechaFin) - new Date(fechaInicio)) / 86400000) + 1;
+  let nuevoTotal = 0;
+  const itemsProcesados = [];
+
+  for (const item of items) {
+    if (item.combo_id) {
+      const comboRes = await client.query('SELECT * FROM combos WHERE id = $1', [item.combo_id]);
+      if (!comboRes.rows.length) throw new Error(`Combo ${item.combo_id} no encontrado`);
+      const combo = comboRes.rows[0];
+
+      // Determinar componentes a verificar y guardar
+      let componentesParaGuardar = [];
+      if (item.componentes && item.componentes.length > 0) {
+        componentesParaGuardar = item.componentes;
+      } else {
+        const standardComps = await client.query(
+          'SELECT ci.mueble_id, ci.cantidad, m.nombre FROM combo_items ci JOIN muebles m ON m.id = ci.mueble_id WHERE ci.combo_id = $1',
+          [combo.id]
+        );
+        componentesParaGuardar = standardComps.rows;
+      }
+
+      // Validar disponibilidad si la reserva está vigente
+      if (esVigenteNuevo) {
+        for (const comp of componentesParaGuardar) {
+          const muebleRes = await client.query('SELECT id, nombre, stock FROM muebles WHERE id = $1', [comp.mueble_id]);
+          if (!muebleRes.rows.length) {
+            throw new Error(`Mueble no encontrado para el combo "${combo.nombre}"`);
+          }
+          const m = muebleRes.rows[0];
+          const cantidadNecesaria = (parseInt(comp.cantidad) || 1) * (parseInt(item.cantidad) || 1);
+          if (m.stock < cantidadNecesaria) {
+            throw new Error(
+              `Stock insuficiente de "${m.nombre}" para el combo "${combo.nombre}". Requeridas: ${cantidadNecesaria}, Disponibles: ${m.stock}`
+            );
+          }
+        }
+      }
+
+      let precio;
+      if (item.precio_unitario !== undefined && item.precio_unitario !== null && !isNaN(item.precio_unitario)) {
+        precio = parseFloat(item.precio_unitario);
+      } else {
+        precio = combo.precio_dia;
+        if (dias >= 30 && combo.precio_mes) precio = combo.precio_mes / 30;
+        else if (dias >= 7 && combo.precio_semana) precio = combo.precio_semana / 7;
+      }
+
+      const subtotal = parseFloat((precio * (parseInt(item.cantidad) || 1) * dias).toFixed(2));
+      nuevoTotal += subtotal;
+      itemsProcesados.push({
+        combo_id: combo.id,
+        mueble_id: null,
+        nombre: combo.nombre,
+        precio_unitario: precio,
+        subtotal,
+        cantidad: parseInt(item.cantidad) || 1,
+        componentes: componentesParaGuardar
+      });
+
+    } else if (item.mueble_id) {
+      const mueble = await client.query('SELECT * FROM muebles WHERE id = $1', [item.mueble_id]);
+      if (!mueble.rows.length) throw new Error(`Mueble ${item.mueble_id} no encontrado`);
+      const m = mueble.rows[0];
+
+      if (esVigenteNuevo && m.stock < (parseInt(item.cantidad) || 1)) {
+        throw new Error(`Stock insuficiente de "${m.nombre}". Disponibles: ${m.stock}`);
+      }
+
+      let precio;
+      if (item.precio_unitario !== undefined && item.precio_unitario !== null && !isNaN(item.precio_unitario)) {
+        precio = parseFloat(item.precio_unitario);
+      } else {
+        precio = m.precio_dia;
+        if (dias >= 30 && m.precio_mes) precio = m.precio_mes / 30;
+        else if (dias >= 7 && m.precio_semana) precio = m.precio_semana / 7;
+      }
+
+      const subtotal = parseFloat((precio * (parseInt(item.cantidad) || 1) * dias).toFixed(2));
+      nuevoTotal += subtotal;
+      itemsProcesados.push({
+        combo_id: null,
+        mueble_id: m.id,
+        nombre: m.nombre,
+        precio_unitario: precio,
+        subtotal,
+        cantidad: parseInt(item.cantidad) || 1
+      });
+
+    } else if (item.nombre) {
+      const precio = parseFloat(item.precio_unitario || 0);
+      const subtotal = parseFloat((precio * (parseInt(item.cantidad) || 1)).toFixed(2));
+      nuevoTotal += subtotal;
+      itemsProcesados.push({
+        combo_id: null,
+        mueble_id: null,
+        nombre: item.nombre,
+        precio_unitario: precio,
+        subtotal,
+        cantidad: parseInt(item.cantidad) || 1
+      });
+    }
+  }
+
+  // 3. Registrar nuevos items e impactar stock
+  for (const item of itemsProcesados) {
+    await client.query(
+      'INSERT INTO reserva_items (reserva_id, mueble_id, combo_id, cantidad, precio_unitario, subtotal, nombre) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+      [reservaId, item.mueble_id, item.combo_id, item.cantidad, item.precio_unitario, item.subtotal, item.nombre]
+    );
+
+    if (item.combo_id && item.componentes && item.componentes.length > 0) {
+      for (const comp of item.componentes) {
+        await client.query(
+          'INSERT INTO reserva_combo_items (reserva_id, combo_id, mueble_id, cantidad) VALUES ($1, $2, $3, $4)',
+          [reservaId, item.combo_id, comp.mueble_id, comp.cantidad]
+        );
+      }
+    }
+
+    if (esVigenteNuevo) {
+      await actualizarStockItem(client, { ...item, reserva_id: reservaId }, 'restar');
+    }
+  }
+
+  const finalTotal = (reqTotal !== undefined && reqTotal !== null && !isNaN(reqTotal) && parseFloat(reqTotal) > 0)
+    ? parseFloat(reqTotal)
+    : nuevoTotal;
+
+  await client.query('UPDATE reservas SET total = $1 WHERE id = $2', [finalTotal.toFixed(2), reservaId]);
+
+  return { itemsProcesados, finalTotal };
 }
 
 // Función para completar automáticamente reservas que ya pasaron su fecha de fin
@@ -79,11 +236,11 @@ async function autoCompletarReservasExpiradas() {
         await client.query('BEGIN');
         await client.query("UPDATE reservas SET estado = 'completada' WHERE id = $1", [r.id]);
         const itemsRes = await client.query(
-          "SELECT mueble_id, combo_id, cantidad FROM reserva_items WHERE reserva_id = $1", 
+          "SELECT * FROM reserva_items WHERE reserva_id = $1", 
           [r.id]
         );
         for (const item of itemsRes.rows) {
-          await actualizarStockItem(client, item, 'sumar');
+          await actualizarStockItem(client, { ...item, reserva_id: r.id }, 'sumar');
         }
         await client.query('COMMIT');
         console.log(`[Auto-completar] Reserva ${r.id} completada automáticamente (fecha vencida).`);
@@ -368,11 +525,11 @@ router.patch('/:id/estado', admin, async (req, res) => {
     const vigenteNuevo = ['pendiente', 'confirmada', 'activa'].includes(estado);
 
     if (vigenteAnterior !== vigenteNuevo) {
-      const itemsRes = await client.query('SELECT mueble_id, combo_id, cantidad FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
+      const itemsRes = await client.query('SELECT * FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
       
       for (const item of itemsRes.rows) {
         const accion = (vigenteAnterior && !vigenteNuevo) ? 'sumar' : 'restar';
-        await actualizarStockItem(client, item, accion);
+        await actualizarStockItem(client, { ...item, reserva_id: req.params.id }, accion);
       }
     }
 
@@ -404,7 +561,7 @@ router.put('/:id', admin, async (req, res) => {
     const {
       fecha_inicio, fecha_fin,
       alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente,
-      direccion_entrega, notas, estado, total
+      direccion_entrega, notas, estado, total, items
     } = req.body;
 
     const estados = ['pendiente','confirmada','activa','completada','cancelada'];
@@ -413,41 +570,87 @@ router.put('/:id', admin, async (req, res) => {
       return res.status(400).json({ error: 'Estado inválido' });
     }
 
-    const reservaRes = await client.query('SELECT estado FROM reservas WHERE id = $1', [req.params.id]);
+    const reservaRes = await client.query('SELECT * FROM reservas WHERE id = $1', [req.params.id]);
     if (!reservaRes.rows.length) {
       client.release();
       return res.status(404).json({ error: 'Reserva no encontrada' });
     }
-    const estadoAnterior = reservaRes.rows[0].estado;
+    const reservaPrevia = reservaRes.rows[0];
+    const estadoAnterior = reservaPrevia.estado;
+    const nuevoEstado = estado || estadoAnterior;
+
+    const vigenteAnterior = ['pendiente', 'confirmada', 'activa'].includes(estadoAnterior);
+    const vigenteNuevo = ['pendiente', 'confirmada', 'activa'].includes(nuevoEstado);
+
+    const fInicio = fecha_inicio || (reservaPrevia.fecha_inicio ? reservaPrevia.fecha_inicio.toISOString().substring(0, 10) : '');
+    const fFin = fecha_fin || (reservaPrevia.fecha_fin ? reservaPrevia.fecha_fin.toISOString().substring(0, 10) : '');
+
+    let itemsFinalesParaCalendario = null;
+
+    if (items && Array.isArray(items) && items.length > 0) {
+      // 1. Revertir stock de items antiguos si la reserva estaba previamente vigente
+      if (vigenteAnterior) {
+        const antiguos = await client.query('SELECT * FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
+        for (const ant of antiguos.rows) {
+          await actualizarStockItem(client, { ...ant, reserva_id: req.params.id }, 'sumar');
+        }
+      }
+
+      // 2. Procesar e insertar nuevos items, validar stock y restar si es vigente
+      const resultadoItems = await procesarYActualizarItemsReserva(
+        client,
+        req.params.id,
+        items,
+        total,
+        fInicio,
+        fFin,
+        vigenteNuevo
+      );
+      itemsFinalesParaCalendario = resultadoItems.itemsProcesados;
+    } else {
+      // Si NO se enviaron items pero cambió el estado de vigente a no-vigente o viceversa
+      if (vigenteAnterior !== vigenteNuevo) {
+        const itemsRes = await client.query('SELECT * FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
+        for (const item of itemsRes.rows) {
+          const accion = (vigenteAnterior && !vigenteNuevo) ? 'sumar' : 'restar';
+          await actualizarStockItem(client, { ...item, reserva_id: req.params.id }, accion);
+        }
+      }
+    }
 
     const result = await client.query(
       `UPDATE reservas 
        SET fecha_inicio=$1, fecha_fin=$2, alias_cliente=$3, nombre_cliente=$4, cedula_cliente=$5, email_cliente=$6, 
-           telefono_cliente=$7, direccion_entrega=$8, notas=$9, estado=$10, total=$11
+           telefono_cliente=$7, direccion_entrega=$8, notas=$9, estado=$10, total=COALESCE($11, total)
        WHERE id=$12 RETURNING *`,
-      [fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente !== undefined ? (cedula_cliente ? cedula_cliente.trim() : null) : reservaRes.rows[0].cedula_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, estado, total, req.params.id]
+      [
+        fInicio,
+        fFin,
+        alias_cliente !== undefined ? alias_cliente : reservaPrevia.alias_cliente,
+        nombre_cliente !== undefined ? nombre_cliente : reservaPrevia.nombre_cliente,
+        cedula_cliente !== undefined ? (cedula_cliente ? cedula_cliente.trim() : null) : reservaPrevia.cedula_cliente,
+        email_cliente !== undefined ? email_cliente : reservaPrevia.email_cliente,
+        telefono_cliente !== undefined ? telefono_cliente : reservaPrevia.telefono_cliente,
+        direccion_entrega !== undefined ? direccion_entrega : reservaPrevia.direccion_entrega,
+        notas !== undefined ? notas : (reservaPrevia.notas || reservaPrevia.notes),
+        nuevoEstado,
+        (total !== undefined && total !== null && !isNaN(total)) ? parseFloat(total) : null,
+        req.params.id
+      ]
     );
     const reservaActualizada = result.rows[0];
-
-    const vigenteAnterior = ['pendiente', 'confirmada', 'activa'].includes(estadoAnterior);
-    const vigenteNuevo = ['pendiente', 'confirmada', 'activa'].includes(estado);
-
-    if (vigenteAnterior !== vigenteNuevo) {
-      const itemsRes = await client.query('SELECT mueble_id, combo_id, cantidad FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
-      
-      for (const item of itemsRes.rows) {
-        const accion = (vigenteAnterior && !vigenteNuevo) ? 'sumar' : 'restar';
-        await actualizarStockItem(client, item, accion);
-      }
-    }
 
     await client.query('COMMIT');
 
     // Sincronizar con Google Calendar
-    if (estado === 'cancelada' && reservaActualizada.google_event_id) {
+    if (nuevoEstado === 'cancelada' && reservaActualizada.google_event_id) {
       googleCalendar.eliminarEventoReserva(reservaActualizada.google_event_id).catch(e => console.error('Error Google Calendar:', e.message));
     } else {
-      db.query('SELECT nombre, cantidad, precio_unitario, subtotal FROM reserva_items WHERE reserva_id = $1', [req.params.id])
+      const fetchItems = itemsFinalesParaCalendario 
+        ? Promise.resolve({ rows: itemsFinalesParaCalendario })
+        : db.query('SELECT nombre, cantidad, precio_unitario, subtotal FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
+      
+      fetchItems
         .then(rItems => googleCalendar.actualizarEventoReserva(reservaActualizada.google_event_id, reservaActualizada, rItems.rows))
         .catch(e => console.error('Error Google Calendar:', e.message));
     }
@@ -455,7 +658,7 @@ router.put('/:id', admin, async (req, res) => {
     res.json(reservaActualizada);
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
+    res.status(400).json({ error: err.message });
   } finally {
     client.release();
   }
@@ -466,7 +669,7 @@ router.put('/:id/items', admin, async (req, res) => {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-    const { items } = req.body;
+    const { items, total } = req.body;
     const reservaId = req.params.id;
 
     if (!items || !items.length) {
@@ -484,139 +687,20 @@ router.put('/:id/items', admin, async (req, res) => {
     if (esVigente) {
       const antiguos = await client.query('SELECT * FROM reserva_items WHERE reserva_id = $1', [reservaId]);
       for (const ant of antiguos.rows) {
-        await actualizarStockItem(client, ant, 'sumar');
+        await actualizarStockItem(client, { ...ant, reserva_id: reservaId }, 'sumar');
       }
     }
 
-    // 2. Eliminar items anteriores
-    await client.query('DELETE FROM reserva_items WHERE reserva_id = $1', [reservaId]);
-    await client.query('DELETE FROM reserva_combo_items WHERE reserva_id = $1', [reservaId]);
-
-    // 3. Procesar nuevos items
-    const dias = Math.ceil((new Date(reserva.fecha_fin) - new Date(reserva.fecha_inicio)) / 86400000) + 1;
-    let nuevoTotal = 0;
-    const itemsProcesados = [];
-
-    for (const item of items) {
-      if (item.combo_id) {
-        const comboRes = await client.query('SELECT * FROM combos WHERE id = $1 AND activo = true', [item.combo_id]);
-        if (!comboRes.rows.length) throw new Error(`Combo ${item.combo_id} no encontrado`);
-        const combo = comboRes.rows[0];
-
-        // Verificar disponibilidad en componentes
-        const componentes = await client.query(
-          `SELECT ci.*, m.nombre, m.stock 
-           FROM combo_items ci 
-           JOIN muebles m ON m.id = ci.mueble_id 
-           WHERE ci.combo_id = $1 AND m.activo = true`,
-          [combo.id]
-        );
-
-        for (const comp of componentes.rows) {
-          const cantidadNecesaria = comp.cantidad * item.cantidad;
-          if (comp.stock < cantidadNecesaria) {
-            throw new Error(
-              `Stock insuficiente de "${comp.nombre}" para el combo "${combo.nombre}". Requeridas: ${cantidadNecesaria}, Disponibles: ${comp.stock}`
-            );
-          }
-        }
-
-        let precio;
-        if (item.precio_unitario !== undefined && item.precio_unitario !== null && !isNaN(item.precio_unitario)) {
-          precio = parseFloat(item.precio_unitario);
-        } else {
-          precio = combo.precio_dia;
-          if (dias >= 30 && combo.precio_mes) precio = combo.precio_mes / 30;
-          else if (dias >= 7 && combo.precio_semana) precio = combo.precio_semana / 7;
-        }
-
-        const subtotal = parseFloat((precio * item.cantidad * dias).toFixed(2));
-        nuevoTotal += subtotal;
-        itemsProcesados.push({
-          combo_id: combo.id,
-          mueble_id: null,
-          nombre: combo.nombre,
-          precio_unitario: precio,
-          subtotal,
-          cantidad: item.cantidad,
-          componentes: item.componentes || null
-        });
-
-      } else if (item.mueble_id) {
-        const mueble = await client.query('SELECT * FROM muebles WHERE id = $1 AND activo = true', [item.mueble_id]);
-        if (!mueble.rows.length) throw new Error(`Mueble ${item.mueble_id} no encontrado`);
-        const m = mueble.rows[0];
-
-        if (m.stock < item.cantidad) {
-          throw new Error(`Stock insuficiente de "${m.nombre}". Disponibles: ${m.stock}`);
-        }
-
-        let precio;
-        if (item.precio_unitario !== undefined && item.precio_unitario !== null && !isNaN(item.precio_unitario)) {
-          precio = parseFloat(item.precio_unitario);
-        } else {
-          precio = m.precio_dia;
-          if (dias >= 30 && m.precio_mes) precio = m.precio_mes / 30;
-          else if (dias >= 7 && m.precio_semana) precio = m.precio_semana / 7;
-        }
-
-        const subtotal = parseFloat((precio * item.cantidad * dias).toFixed(2));
-        nuevoTotal += subtotal;
-        itemsProcesados.push({
-          combo_id: null,
-          mueble_id: m.id,
-          precio_unitario: precio,
-          subtotal,
-          cantidad: item.cantidad
-        });
-      } else if (item.nombre) {
-        const precio = parseFloat(item.precio_unitario || 0);
-        const subtotal = parseFloat((precio * item.cantidad).toFixed(2));
-        nuevoTotal += subtotal;
-        itemsProcesados.push({
-          combo_id: null,
-          mueble_id: null,
-          nombre: item.nombre,
-          precio_unitario: precio,
-          subtotal,
-          cantidad: item.cantidad
-        });
-      }
-    }
-
-    // 4. Registrar nuevos items e impactar stock
-    for (const item of itemsProcesados) {
-      await client.query(
-        'INSERT INTO reserva_items (reserva_id, mueble_id, combo_id, cantidad, precio_unitario, subtotal, nombre) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [reservaId, item.mueble_id, item.combo_id, item.cantidad, item.precio_unitario, item.subtotal, item.nombre]
-      );
-
-      if (item.combo_id) {
-        if (item.componentes && item.componentes.length > 0) {
-          for (const comp of item.componentes) {
-            await client.query(
-              'INSERT INTO reserva_combo_items (reserva_id, combo_id, mueble_id, cantidad) VALUES ($1, $2, $3, $4)',
-              [reservaId, item.combo_id, comp.mueble_id, comp.cantidad]
-            );
-          }
-        } else {
-          const standardComps = await client.query('SELECT mueble_id, cantidad FROM combo_items WHERE combo_id = $1', [item.combo_id]);
-          for (const comp of standardComps.rows) {
-            await client.query(
-              'INSERT INTO reserva_combo_items (reserva_id, combo_id, mueble_id, cantidad) VALUES ($1, $2, $3, $4)',
-              [reservaId, item.combo_id, comp.mueble_id, comp.cantidad]
-            );
-          }
-        }
-      }
-
-      if (esVigente) {
-        await actualizarStockItem(client, { ...item, reserva_id: reservaId }, 'restar');
-      }
-    }
-
-    // 5. Actualizar el total de la reserva
-    await client.query('UPDATE reservas SET total = $1 WHERE id = $2', [nuevoTotal.toFixed(2), reservaId]);
+    // 2. Procesar y actualizar items
+    const { itemsProcesados, finalTotal } = await procesarYActualizarItemsReserva(
+      client,
+      reservaId,
+      items,
+      total,
+      reserva.fecha_inicio,
+      reserva.fecha_fin,
+      esVigente
+    );
 
     await client.query('COMMIT');
 
@@ -628,7 +712,7 @@ router.put('/:id/items', admin, async (req, res) => {
       })
       .catch(e => console.error('Error Google Calendar:', e.message));
 
-    res.json({ ok: true, nuevoTotal });
+    res.json({ ok: true, nuevoTotal: finalTotal });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(400).json({ error: err.message });
@@ -654,9 +738,9 @@ router.delete('/:id', admin, async (req, res) => {
     const esVigente = ['pendiente', 'confirmada', 'activa'].includes(estadoActual);
 
     if (esVigente) {
-      const itemsRes = await client.query('SELECT mueble_id, combo_id, cantidad FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
+      const itemsRes = await client.query('SELECT * FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
       for (const item of itemsRes.rows) {
-        await actualizarStockItem(client, item, 'sumar');
+        await actualizarStockItem(client, { ...item, reserva_id: req.params.id }, 'sumar');
       }
     }
 
