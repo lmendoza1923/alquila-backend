@@ -375,7 +375,20 @@ router.post('/', async (req, res) => {
     const nom = nombre_cliente ? nombre_cliente.trim() : null;
     const ali = alias_cliente ? alias_cliente.trim() : null;
 
-    if (!finalClienteId && (ced || tel || nom || ali)) {
+    if (finalClienteId) {
+      // Si el cliente fue jalado / seleccionado, actualizar datos para mantenerlos al día sin duplicar
+      await client.query(`
+        UPDATE clientes SET
+          alias = COALESCE($1, alias),
+          nombre = COALESCE($2, nombre),
+          cedula = COALESCE($3, cedula),
+          telefono = COALESCE($4, telefono),
+          email = COALESCE($5, email),
+          direccion = COALESCE($6, direccion),
+          actualizado_en = CURRENT_TIMESTAMP
+        WHERE id = $7
+      `, [ali, nom, ced, tel, email_cliente || null, direccion_entrega || null, finalClienteId]);
+    } else if (ced || tel || nom || ali) {
       if (ced) {
         const findCed = await client.query('SELECT id FROM clientes WHERE LOWER(TRIM(cedula)) = LOWER($1)', [ced]);
         if (findCed.rows.length) finalClienteId = findCed.rows[0].id;
@@ -596,7 +609,7 @@ router.put('/:id', admin, async (req, res) => {
     const {
       fecha_inicio, fecha_fin,
       alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente,
-      direccion_entrega, notas, estado, total, items
+      direccion_entrega, notas, estado, total, items, cliente_id
     } = req.body;
 
     const estados = ['pendiente','confirmada','activa','completada','cancelada'];
@@ -639,8 +652,9 @@ router.put('/:id', admin, async (req, res) => {
     const result = await client.query(
       `UPDATE reservas 
        SET fecha_inicio=$1, fecha_fin=$2, alias_cliente=$3, nombre_cliente=$4, cedula_cliente=$5, email_cliente=$6, 
-           telefono_cliente=$7, direccion_entrega=$8, notas=$9, estado=$10, total=COALESCE($11, total)
-       WHERE id=$12 RETURNING *`,
+           telefono_cliente=$7, direccion_entrega=$8, notas=$9, estado=$10, total=COALESCE($11, total),
+           cliente_id=COALESCE($12, cliente_id)
+       WHERE id=$13 RETURNING *`,
       [
         fInicio,
         fFin,
@@ -653,6 +667,7 @@ router.put('/:id', admin, async (req, res) => {
         notas !== undefined ? notas : (reservaPrevia.notas || reservaPrevia.notes),
         nuevoEstado,
         (total !== undefined && total !== null && !isNaN(total)) ? parseFloat(total) : null,
+        cliente_id !== undefined ? cliente_id : null,
         req.params.id
       ]
     );
