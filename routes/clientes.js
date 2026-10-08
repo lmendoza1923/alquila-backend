@@ -143,7 +143,77 @@ router.get('/:id', admin, async (req, res) => {
   }
 });
 
-// Crear un nuevo cliente
+// Endpoint público para que el cliente llene el formulario desde un enlace compartido
+router.post('/publico', async (req, res) => {
+  try {
+    const { alias, nombre, cedula, telefono, email, direccion, notas } = req.body;
+
+    if (!nombre && !alias && !telefono) {
+      return res.status(400).json({ error: 'Debes proporcionar al menos tu nombre y número de teléfono' });
+    }
+
+    const nom = nombre ? nombre.trim() : (alias ? alias.trim() : 'Cliente sin nombre');
+    const ali = alias ? alias.trim() : null;
+    const ced = cedula ? cedula.trim() : null;
+    const tel = telefono ? telefono.trim() : null;
+    const em = email ? email.trim() : null;
+    const dir = direccion ? direccion.trim() : null;
+    const not = notas ? notas.trim() : null;
+
+    // Verificar si ya existe por cédula o teléfono para no duplicar si el cliente ya está registrado
+    let clienteExistente = null;
+    if (ced) {
+      const checkCed = await db.query('SELECT * FROM clientes WHERE LOWER(TRIM(cedula)) = LOWER($1)', [ced]);
+      if (checkCed.rows.length) clienteExistente = checkCed.rows[0];
+    }
+    if (!clienteExistente && tel) {
+      const checkTel = await db.query('SELECT * FROM clientes WHERE TRIM(telefono) = $1', [tel]);
+      if (checkTel.rows.length) clienteExistente = checkTel.rows[0];
+    }
+
+    let cliente;
+    if (clienteExistente) {
+      // Actualizar datos del cliente existente
+      const upRes = await db.query(`
+        UPDATE clientes SET
+          alias = COALESCE($1, alias),
+          nombre = COALESCE($2, nombre),
+          cedula = COALESCE($3, cedula),
+          telefono = COALESCE($4, telefono),
+          email = COALESCE($5, email),
+          direccion = COALESCE($6, direccion),
+          notas = CASE 
+            WHEN notas IS NULL OR notas = '' THEN $7 
+            WHEN $7 IS NOT NULL AND $7 != '' AND $7 != notas THEN notas || E'\n' || $7 
+            ELSE notas 
+          END,
+          actualizado_en = CURRENT_TIMESTAMP
+        WHERE id = $8
+        RETURNING *
+      `, [ali, nom, ced, tel, em, dir, not, clienteExistente.id]);
+      cliente = upRes.rows[0];
+    } else {
+      // Crear nuevo cliente
+      const insRes = await db.query(`
+        INSERT INTO clientes (alias, nombre, cedula, telefono, email, direccion, notas)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+      `, [ali, nom, ced, tel, em, dir, not]);
+      cliente = insRes.rows[0];
+    }
+
+    res.status(201).json({
+      ok: true,
+      mensaje: 'Información registrada con éxito',
+      cliente
+    });
+  } catch (err) {
+    console.error('Error en formulario público de clientes:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Crear un nuevo cliente (panel admin)
 router.post('/', admin, async (req, res) => {
   try {
     const { alias, nombre, cedula, telefono, email, direccion, notas } = req.body;
