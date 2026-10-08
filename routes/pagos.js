@@ -1,10 +1,15 @@
 const router = require('express').Router();
 const db = require('../db');
 const { admin } = require('../middleware/auth');
+const reservasRouter = require('./reservas');
 
 // Obtener pagos de una reserva
 router.get('/reserva/:reservaId', admin, async (req, res) => {
   try {
+    if (typeof reservasRouter.autoCompletarReservasExpiradas === 'function') {
+      await reservasRouter.autoCompletarReservasExpiradas();
+    }
+
     const result = await db.query(
       `SELECT * FROM pagos WHERE reserva_id = $1 ORDER BY creado_en ASC`,
       [req.params.reservaId]

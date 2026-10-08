@@ -166,42 +166,117 @@ async function procesarYActualizarItemsReserva(client, reservaId, items, reqTota
   return { itemsProcesados, finalTotal };
 }
 
-// Función para completar automáticamente reservas que ya pasaron su fecha de fin
+// Función para saldar el saldo pendiente de una reserva específica
+async function saldarSaldoPendienteReserva(client, reservaId, fechaFinStr) {
+  const checkRes = await client.query(
+    `SELECT r.id, r.total, TO_CHAR(r.fecha_fin, 'YYYY-MM-DD') AS fecha_fin_str,
+            COALESCE(SUM(p.monto), 0) AS pagado 
+     FROM reservas r 
+     LEFT JOIN pagos p ON p.reserva_id = r.id 
+     WHERE r.id = $1 
+     GROUP BY r.id, r.total, r.fecha_fin`,
+    [reservaId]
+  );
+  if (!checkRes.rows.length) return 0;
+  
+  const r = checkRes.rows[0];
+  const actualPendiente = parseFloat(r.total || 0) - parseFloat(r.pagado || 0);
+  if (actualPendiente > 0.001) {
+    const montoFinal = parseFloat(actualPendiente.toFixed(2));
+    const fechaRef = fechaFinStr || r.fecha_fin_str;
+    if (fechaRef) {
+      await client.query(
+        `INSERT INTO pagos (reserva_id, monto, metodo, notas, creado_en)
+         VALUES ($1, $2, $3, $4, ($5::date + TIME '20:00:00'))`,
+        [r.id, montoFinal, 'efectivo', 'Saldo cancelado automáticamente al finalizar la reserva', fechaRef]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO pagos (reserva_id, monto, metodo, notas, creado_en)
+         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
+        [r.id, montoFinal, 'efectivo', 'Saldo cancelado automáticamente al finalizar la reserva']
+      );
+    }
+    console.log(`[Auto-saldar] Saldo de $${montoFinal} saldado automáticamente para la reserva ${r.id}.`);
+    return montoFinal;
+  }
+  return 0;
+}
+
+// Función para completar automáticamente y saldar reservas que ya pasaron su fecha de fin o finalizaron
 async function autoCompletarReservasExpiradas() {
   const client = await db.connect();
   try {
-    const query = `
-      SELECT id 
-      FROM reservas 
-      WHERE fecha_fin < CURRENT_DATE 
-        AND estado IN ('pendiente', 'confirmada', 'activa')
-    `;
-    const res = await client.query(query);
-    for (const r of res.rows) {
-      try {
-        await client.query('BEGIN');
-        await client.query("UPDATE reservas SET estado = 'completada' WHERE id = $1", [r.id]);
-        const itemsRes = await client.query(
-          "SELECT * FROM reserva_items WHERE reserva_id = $1", 
-          [r.id]
-        );
-        for (const item of itemsRes.rows) {
-          await actualizarStockItem(client, { ...item, reserva_id: r.id }, 'sumar');
+    const lockRes = await client.query('SELECT pg_try_advisory_lock(987654321) AS locked');
+    if (!lockRes.rows[0].locked) {
+      return;
+    }
+
+    try {
+      // 1. Marcar como completadas las reservas cuya fecha_fin ya pasó (< CURRENT_DATE) y siguen pendientes/activas/confirmadas
+      const queryExpiradas = `
+        SELECT id, fecha_fin, TO_CHAR(fecha_fin, 'YYYY-MM-DD') AS fecha_fin_str
+        FROM reservas 
+        WHERE fecha_fin < CURRENT_DATE 
+          AND estado IN ('pendiente', 'confirmada', 'activa')
+      `;
+      const resExpiradas = await client.query(queryExpiradas);
+      for (const r of resExpiradas.rows) {
+        try {
+          await client.query('BEGIN');
+          await client.query("UPDATE reservas SET estado = 'completada' WHERE id = $1", [r.id]);
+          const itemsRes = await client.query(
+            "SELECT * FROM reserva_items WHERE reserva_id = $1", 
+            [r.id]
+          );
+          for (const item of itemsRes.rows) {
+            await actualizarStockItem(client, { ...item, reserva_id: r.id }, 'sumar');
+          }
+          await client.query('COMMIT');
+          console.log(`[Auto-completar] Reserva ${r.id} completada automáticamente (fecha vencida).`);
+        } catch (err) {
+          await client.query('ROLLBACK');
+          console.error(`[Auto-completar] Error en reserva ${r.id}:`, err.message);
         }
-        await client.query('COMMIT');
-        console.log(`[Auto-completar] Reserva ${r.id} completada automáticamente (fecha vencida).`);
-      } catch (err) {
-        await client.query('ROLLBACK');
-        console.error(`[Auto-completar] Error en reserva ${r.id}:`, err.message);
       }
+
+      // 2. Saldar el saldo pendiente de todas las reservas que ya finalizaron o están completadas
+      // (fecha_fin < CURRENT_DATE OR estado = 'completada') y no están canceladas
+      const queryPendientes = `
+        SELECT r.id, r.total, TO_CHAR(r.fecha_fin, 'YYYY-MM-DD') AS fecha_fin_str,
+               COALESCE(SUM(p.monto), 0) AS total_pagado,
+               ROUND(r.total - COALESCE(SUM(p.monto), 0), 2) AS saldo_pendiente
+        FROM reservas r
+        LEFT JOIN pagos p ON p.reserva_id = r.id
+        WHERE r.estado != 'cancelada'
+          AND (r.fecha_fin < CURRENT_DATE OR r.estado = 'completada')
+        GROUP BY r.id, r.total, r.fecha_fin
+        HAVING ROUND(r.total - COALESCE(SUM(p.monto), 0), 2) > 0.001
+        ORDER BY r.fecha_fin ASC
+      `;
+      const resPendientes = await client.query(queryPendientes);
+
+      for (const r of resPendientes.rows) {
+        try {
+          await client.query('BEGIN');
+          await saldarSaldoPendienteReserva(client, r.id, r.fecha_fin_str);
+          await client.query('COMMIT');
+        } catch (err) {
+          await client.query('ROLLBACK');
+          console.error(`[Auto-saldar] Error al saldar reserva ${r.id}:`, err.message);
+        }
+      }
+    } finally {
+      await client.query('SELECT pg_advisory_unlock(987654321)');
     }
   } catch (err) {
-    console.error('[Auto-completar] Error general:', err.message);
+    console.error('[Auto-completar/saldar] Error general:', err.message);
   } finally {
     client.release();
   }
 }
 router.autoCompletarReservasExpiradas = autoCompletarReservasExpiradas;
+router.saldarSaldoPendienteReserva = saldarSaldoPendienteReserva;
 
 // Crear reserva (público o autenticado)
 router.post('/', async (req, res) => {
@@ -294,10 +369,40 @@ router.post('/', async (req, res) => {
       }
     }
 
+    let finalClienteId = req.body.cliente_id || null;
+    const ced = cedula_cliente ? cedula_cliente.trim() : null;
+    const tel = telefono_cliente ? telefono_cliente.trim() : null;
+    const nom = nombre_cliente ? nombre_cliente.trim() : null;
+    const ali = alias_cliente ? alias_cliente.trim() : null;
+
+    if (!finalClienteId && (ced || tel || nom || ali)) {
+      if (ced) {
+        const findCed = await client.query('SELECT id FROM clientes WHERE LOWER(TRIM(cedula)) = LOWER($1)', [ced]);
+        if (findCed.rows.length) finalClienteId = findCed.rows[0].id;
+      }
+      if (!finalClienteId && tel) {
+        const findTel = await client.query('SELECT id FROM clientes WHERE TRIM(telefono) = $1', [tel]);
+        if (findTel.rows.length) finalClienteId = findTel.rows[0].id;
+      }
+      if (!finalClienteId && nom && nom.length > 2) {
+        const findNom = await client.query('SELECT id FROM clientes WHERE LOWER(TRIM(nombre)) = LOWER($1)', [nom]);
+        if (findNom.rows.length) finalClienteId = findNom.rows[0].id;
+      }
+
+      if (!finalClienteId && (nom || ali)) {
+        const insCli = await client.query(`
+          INSERT INTO clientes (alias, nombre, cedula, telefono, email, direccion, notas)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          RETURNING id
+        `, [ali || null, nom || ali || 'Cliente sin nombre', ced || null, tel || null, email_cliente || null, direccion_entrega || null, notas || null]);
+        finalClienteId = insCli.rows[0].id;
+      }
+    }
+
     const resReserva = await client.query(
-      `INSERT INTO reservas (fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total, estado)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente ? cedula_cliente.trim() : null, email_cliente, telefono_cliente, direccion_entrega, notas, total.toFixed(2), 'activa']
+      `INSERT INTO reservas (fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total, estado, cliente_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente ? cedula_cliente.trim() : null, email_cliente, telefono_cliente, direccion_entrega, notas, total.toFixed(2), 'activa', finalClienteId]
     );
     const reserva = resReserva.rows[0];
 
@@ -458,6 +563,11 @@ router.patch('/:id/estado', admin, async (req, res) => {
       }
     }
 
+    if (estado === 'completada') {
+      const fechaFinStr = reservaActualizada.fecha_fin ? (typeof reservaActualizada.fecha_fin === 'string' ? reservaActualizada.fecha_fin.substring(0, 10) : reservaActualizada.fecha_fin.toISOString().substring(0, 10)) : null;
+      await saldarSaldoPendienteReserva(client, req.params.id, fechaFinStr);
+    }
+
     await client.query('COMMIT');
 
     // Sincronizar con Google Calendar
@@ -547,6 +657,11 @@ router.put('/:id', admin, async (req, res) => {
       ]
     );
     const reservaActualizada = result.rows[0];
+
+    if (nuevoEstado === 'completada') {
+      const fechaFinStr = fFin || (reservaActualizada.fecha_fin ? (typeof reservaActualizada.fecha_fin === 'string' ? reservaActualizada.fecha_fin.substring(0, 10) : reservaActualizada.fecha_fin.toISOString().substring(0, 10)) : null);
+      await saldarSaldoPendienteReserva(client, req.params.id, fechaFinStr);
+    }
 
     await client.query('COMMIT');
 
