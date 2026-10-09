@@ -18,6 +18,8 @@ router.get('/', admin, async (req, res) => {
            OR LOWER(COALESCE(c.telefono, '')) LIKE $1
            OR LOWER(COALESCE(c.email, '')) LIKE $1
            OR LOWER(COALESCE(c.direccion, '')) LIKE $1
+           OR LOWER(COALESCE(c.contacto2_nombre, '')) LIKE $1
+           OR LOWER(COALESCE(c.contacto2_telefono, '')) LIKE $1
       `;
     }
 
@@ -28,6 +30,8 @@ router.get('/', admin, async (req, res) => {
         c.nombre,
         c.cedula,
         c.telefono,
+        c.contacto2_nombre,
+        c.contacto2_telefono,
         c.email,
         c.direccion,
         c.notas,
@@ -146,16 +150,34 @@ router.get('/:id', admin, async (req, res) => {
 // Endpoint público para que el cliente llene el formulario desde un enlace compartido
 router.post('/publico', async (req, res) => {
   try {
-    const { alias, nombre, cedula, telefono, email, direccion, notas } = req.body;
+    const { alias, nombre, cedula, telefono, contacto2_nombre, contacto2_telefono, email, direccion, notas } = req.body;
 
-    if (!nombre && !alias && !telefono) {
-      return res.status(400).json({ error: 'Debes proporcionar al menos tu nombre y número de teléfono' });
+    if (!nombre || !nombre.trim()) {
+      return res.status(400).json({ error: 'Por favor ingresa tu nombre completo' });
     }
 
-    const nom = nombre ? nombre.trim() : (alias ? alias.trim() : 'Cliente sin nombre');
+    if (!cedula || !cedula.trim()) {
+      return res.status(400).json({ error: 'La cédula es obligatoria' });
+    }
+
+    if (!telefono || !telefono.trim()) {
+      return res.status(400).json({ error: 'El teléfono / WhatsApp es obligatorio' });
+    }
+
+    if (!contacto2_nombre || !contacto2_nombre.trim()) {
+      return res.status(400).json({ error: 'El nombre del segundo contacto es obligatorio' });
+    }
+
+    if (!contacto2_telefono || !contacto2_telefono.trim()) {
+      return res.status(400).json({ error: 'El teléfono / WhatsApp del segundo contacto es obligatorio' });
+    }
+
+    const nom = nombre.trim();
     const ali = alias ? alias.trim() : null;
-    const ced = cedula ? cedula.trim() : null;
-    const tel = telefono ? telefono.trim() : null;
+    const ced = cedula.trim();
+    const tel = telefono.trim();
+    const c2Nom = contacto2_nombre.trim();
+    const c2Tel = contacto2_telefono.trim();
     const em = email ? email.trim() : null;
     const dir = direccion ? direccion.trim() : null;
     const not = notas ? notas.trim() : null;
@@ -180,25 +202,27 @@ router.post('/publico', async (req, res) => {
           nombre = COALESCE($2, nombre),
           cedula = COALESCE($3, cedula),
           telefono = COALESCE($4, telefono),
-          email = COALESCE($5, email),
-          direccion = COALESCE($6, direccion),
+          contacto2_nombre = COALESCE($5, contacto2_nombre),
+          contacto2_telefono = COALESCE($6, contacto2_telefono),
+          email = COALESCE($7, email),
+          direccion = COALESCE($8, direccion),
           notas = CASE 
-            WHEN notas IS NULL OR notas = '' THEN $7 
-            WHEN $7 IS NOT NULL AND $7 != '' AND $7 != notas THEN notas || E'\n' || $7 
+            WHEN notas IS NULL OR notas = '' THEN $9 
+            WHEN $9 IS NOT NULL AND $9 != '' AND $9 != notas THEN notas || E'\n' || $9 
             ELSE notas 
           END,
           actualizado_en = CURRENT_TIMESTAMP
-        WHERE id = $8
+        WHERE id = $10
         RETURNING *
-      `, [ali, nom, ced, tel, em, dir, not, clienteExistente.id]);
+      `, [ali, nom, ced, tel, c2Nom, c2Tel, em, dir, not, clienteExistente.id]);
       cliente = upRes.rows[0];
     } else {
       // Crear nuevo cliente
       const insRes = await db.query(`
-        INSERT INTO clientes (alias, nombre, cedula, telefono, email, direccion, notas)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO clientes (alias, nombre, cedula, telefono, contacto2_nombre, contacto2_telefono, email, direccion, notas)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING *
-      `, [ali, nom, ced, tel, em, dir, not]);
+      `, [ali, nom, ced, tel, c2Nom, c2Tel, em, dir, not]);
       cliente = insRes.rows[0];
     }
 
@@ -216,21 +240,23 @@ router.post('/publico', async (req, res) => {
 // Crear un nuevo cliente (panel admin)
 router.post('/', admin, async (req, res) => {
   try {
-    const { alias, nombre, cedula, telefono, email, direccion, notas } = req.body;
+    const { alias, nombre, cedula, telefono, contacto2_nombre, contacto2_telefono, email, direccion, notas } = req.body;
 
     if (!nombre && !alias) {
       return res.status(400).json({ error: 'El nombre o alias del cliente es obligatorio' });
     }
 
     const result = await db.query(`
-      INSERT INTO clientes (alias, nombre, cedula, telefono, email, direccion, notas)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO clientes (alias, nombre, cedula, telefono, contacto2_nombre, contacto2_telefono, email, direccion, notas)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *
     `, [
       alias ? alias.trim() : null,
       nombre ? nombre.trim() : (alias ? alias.trim() : 'Sin nombre'),
       cedula ? cedula.trim() : null,
       telefono ? telefono.trim() : null,
+      contacto2_nombre ? contacto2_nombre.trim() : null,
+      contacto2_telefono ? contacto2_telefono.trim() : null,
       email ? email.trim() : null,
       direccion ? direccion.trim() : null,
       notas ? notas.trim() : null
@@ -249,7 +275,7 @@ router.put('/:id', admin, async (req, res) => {
     await client.query('BEGIN');
     const { id } = req.params;
     const {
-      alias, nombre, cedula, telefono, email, direccion, notas,
+      alias, nombre, cedula, telefono, contacto2_nombre, contacto2_telefono, email, direccion, notas,
       actualizar_reservas = true
     } = req.body;
 
@@ -263,6 +289,8 @@ router.put('/:id', admin, async (req, res) => {
     const updatedAlias = alias !== undefined ? (alias ? alias.trim() : null) : existe.rows[0].alias;
     const updatedCedula = cedula !== undefined ? (cedula ? cedula.trim() : null) : existe.rows[0].cedula;
     const updatedTelefono = telefono !== undefined ? (telefono ? telefono.trim() : null) : existe.rows[0].telefono;
+    const updatedContacto2Nombre = contacto2_nombre !== undefined ? (contacto2_nombre ? contacto2_nombre.trim() : null) : existe.rows[0].contacto2_nombre;
+    const updatedContacto2Telefono = contacto2_telefono !== undefined ? (contacto2_telefono ? contacto2_telefono.trim() : null) : existe.rows[0].contacto2_telefono;
     const updatedEmail = email !== undefined ? (email ? email.trim() : null) : existe.rows[0].email;
     const updatedDireccion = direccion !== undefined ? (direccion ? direccion.trim() : null) : existe.rows[0].direccion;
     const updatedNotas = notas !== undefined ? (notas ? notas.trim() : null) : existe.rows[0].notas;
@@ -273,17 +301,21 @@ router.put('/:id', admin, async (req, res) => {
         nombre = $2,
         cedula = $3,
         telefono = $4,
-        email = $5,
-        direccion = $6,
-        notas = $7,
+        contacto2_nombre = $5,
+        contacto2_telefono = $6,
+        email = $7,
+        direccion = $8,
+        notas = $9,
         actualizado_en = CURRENT_TIMESTAMP
-      WHERE id = $8
+      WHERE id = $10
       RETURNING *
     `, [
       updatedAlias,
       updatedNombre || updatedAlias || 'Sin nombre',
       updatedCedula,
       updatedTelefono,
+      updatedContacto2Nombre,
+      updatedContacto2Telefono,
       updatedEmail,
       updatedDireccion,
       updatedNotas,

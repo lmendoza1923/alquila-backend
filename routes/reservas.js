@@ -286,6 +286,7 @@ router.post('/', async (req, res) => {
     const {
       fecha_inicio, fecha_fin,
       alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente,
+      contacto2_nombre, contacto2_telefono,
       direccion_entrega, notas, items
     } = req.body;
 
@@ -374,6 +375,8 @@ router.post('/', async (req, res) => {
     const tel = telefono_cliente ? telefono_cliente.trim() : null;
     const nom = nombre_cliente ? nombre_cliente.trim() : null;
     const ali = alias_cliente ? alias_cliente.trim() : null;
+    const c2Nom = contacto2_nombre ? contacto2_nombre.trim() : null;
+    const c2Tel = contacto2_telefono ? contacto2_telefono.trim() : null;
 
     if (finalClienteId) {
       // Si el cliente fue jalado / seleccionado, actualizar datos para mantenerlos al día sin duplicar
@@ -383,11 +386,13 @@ router.post('/', async (req, res) => {
           nombre = COALESCE($2, nombre),
           cedula = COALESCE($3, cedula),
           telefono = COALESCE($4, telefono),
-          email = COALESCE($5, email),
-          direccion = COALESCE($6, direccion),
+          contacto2_nombre = COALESCE($5, contacto2_nombre),
+          contacto2_telefono = COALESCE($6, contacto2_telefono),
+          email = COALESCE($7, email),
+          direccion = COALESCE($8, direccion),
           actualizado_en = CURRENT_TIMESTAMP
-        WHERE id = $7
-      `, [ali, nom, ced, tel, email_cliente || null, direccion_entrega || null, finalClienteId]);
+        WHERE id = $9
+      `, [ali, nom, ced, tel, c2Nom, c2Tel, email_cliente || null, direccion_entrega || null, finalClienteId]);
     } else if (ced || tel || nom || ali) {
       if (ced) {
         const findCed = await client.query('SELECT id FROM clientes WHERE LOWER(TRIM(cedula)) = LOWER($1)', [ced]);
@@ -404,10 +409,10 @@ router.post('/', async (req, res) => {
 
       if (!finalClienteId && (nom || ali)) {
         const insCli = await client.query(`
-          INSERT INTO clientes (alias, nombre, cedula, telefono, email, direccion, notas)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          INSERT INTO clientes (alias, nombre, cedula, telefono, contacto2_nombre, contacto2_telefono, email, direccion, notas)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
           RETURNING id
-        `, [ali || null, nom || ali || 'Cliente sin nombre', ced || null, tel || null, email_cliente || null, direccion_entrega || null, notas || null]);
+        `, [ali || null, nom || ali || 'Cliente sin nombre', ced || null, tel || null, c2Nom, c2Tel, email_cliente || null, direccion_entrega || null, notas || null]);
         finalClienteId = insCli.rows[0].id;
       }
     }

@@ -44,6 +44,8 @@ db.query(`
     actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
   ALTER TABLE reservas ADD COLUMN IF NOT EXISTS cliente_id UUID REFERENCES clientes(id) ON DELETE SET NULL;
+  ALTER TABLE clientes ADD COLUMN IF NOT EXISTS contacto2_nombre VARCHAR(255);
+  ALTER TABLE clientes ADD COLUMN IF NOT EXISTS contacto2_telefono VARCHAR(100);
   CREATE TABLE IF NOT EXISTS reserva_combo_items (
     id SERIAL PRIMARY KEY,
     reserva_id UUID REFERENCES reservas(id) ON DELETE CASCADE,
