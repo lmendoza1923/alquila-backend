@@ -476,6 +476,7 @@ router.get('/', auth, async (req, res) => {
                    json_build_object(
                      'mueble_id', ri.mueble_id,
                      'combo_id', ri.combo_id,
+                     'nombre', COALESCE(ri.nombre, m.nombre, c.nombre),
                      'mueble', COALESCE(ri.nombre, m.nombre, c.nombre),
                      'cantidad', ri.cantidad,
                      'subtotal', ri.subtotal,
@@ -511,6 +512,7 @@ router.get('/', auth, async (req, res) => {
                    json_build_object(
                      'mueble_id', ri.mueble_id,
                      'combo_id', ri.combo_id,
+                     'nombre', COALESCE(ri.nombre, m.nombre, c.nombre),
                      'mueble', COALESCE(ri.nombre, m.nombre, c.nombre),
                      'cantidad', ri.cantidad,
                      'subtotal', ri.subtotal,
