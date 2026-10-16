@@ -35,6 +35,9 @@ router.get('/', admin, async (req, res) => {
         c.email,
         c.direccion,
         c.notas,
+        c.origen_formulario,
+        COALESCE(c.revisado, true) AS revisado,
+        c.fecha_formulario,
         c.creado_en,
         c.actualizado_en,
         COALESCE(res_agg.total_reservas, 0) AS total_reservas,
@@ -92,13 +95,55 @@ router.get('/', admin, async (req, res) => {
         GROUP BY r.cliente_id
       ) res_agg ON res_agg.cliente_id = c.id
       ${whereClause}
-      ORDER BY c.creado_en DESC, c.nombre ASC
+      ORDER BY COALESCE(c.revisado, true) ASC, COALESCE(c.fecha_formulario, c.creado_en) DESC, c.nombre ASC
     `;
 
     const result = await db.query(query, params);
     res.json(result.rows);
   } catch (err) {
     console.error('Error al obtener clientes:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Conteo de clientes nuevos registrados por formulario pendientes de revisar
+router.get('/nuevos-count', admin, async (req, res) => {
+  try {
+    const result = await db.query(
+      'SELECT COUNT(*)::int AS total FROM clientes WHERE origen_formulario = true AND COALESCE(revisado, true) = false'
+    );
+    res.json({ nuevos_formulario: result.rows[0]?.total || 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Marcar todos los clientes de formulario como revisados
+router.patch('/revisar-todos', admin, async (req, res) => {
+  try {
+    await db.query(
+      'UPDATE clientes SET revisado = true, actualizado_en = CURRENT_TIMESTAMP WHERE COALESCE(revisado, true) = false'
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Marcar un cliente específico como revisado (o alternar su estado de revisión)
+router.patch('/:id/revisar', admin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const revisado = req.body.revisado !== undefined ? Boolean(req.body.revisado) : true;
+    const result = await db.query(
+      'UPDATE clientes SET revisado = $1, actualizado_en = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+      [revisado, id]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Cliente no encontrado' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -195,7 +240,7 @@ router.post('/publico', async (req, res) => {
 
     let cliente;
     if (clienteExistente) {
-      // Actualizar datos del cliente existente
+      // Actualizar datos del cliente existente y marcar como nuevo envío de formulario sin revisar
       const upRes = await db.query(`
         UPDATE clientes SET
           alias = COALESCE($1, alias),
@@ -211,16 +256,19 @@ router.post('/publico', async (req, res) => {
             WHEN $9 IS NOT NULL AND $9 != '' AND $9 != notas THEN notas || E'\n' || $9 
             ELSE notas 
           END,
+          origen_formulario = true,
+          revisado = false,
+          fecha_formulario = CURRENT_TIMESTAMP,
           actualizado_en = CURRENT_TIMESTAMP
         WHERE id = $10
         RETURNING *
       `, [ali, nom, ced, tel, c2Nom, c2Tel, em, dir, not, clienteExistente.id]);
       cliente = upRes.rows[0];
     } else {
-      // Crear nuevo cliente
+      // Crear nuevo cliente marcado como proveniente del formulario y pendiente de revisar
       const insRes = await db.query(`
-        INSERT INTO clientes (alias, nombre, cedula, telefono, contacto2_nombre, contacto2_telefono, email, direccion, notas)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        INSERT INTO clientes (alias, nombre, cedula, telefono, contacto2_nombre, contacto2_telefono, email, direccion, notas, origen_formulario, revisado, fecha_formulario)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, false, CURRENT_TIMESTAMP)
         RETURNING *
       `, [ali, nom, ced, tel, c2Nom, c2Tel, em, dir, not]);
       cliente = insRes.rows[0];

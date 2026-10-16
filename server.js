@@ -45,8 +45,14 @@ db.query(`
     actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
   ALTER TABLE reservas ADD COLUMN IF NOT EXISTS cliente_id UUID REFERENCES clientes(id) ON DELETE SET NULL;
+  ALTER TABLE reservas ADD COLUMN IF NOT EXISTS contrato_confirmado BOOLEAN DEFAULT false;
+  ALTER TABLE reservas ADD COLUMN IF NOT EXISTS contrato_confirmado_en TIMESTAMP;
+  ALTER TABLE reservas ADD COLUMN IF NOT EXISTS contrato_abono_extra NUMERIC(10,2) DEFAULT 0;
   ALTER TABLE clientes ADD COLUMN IF NOT EXISTS contacto2_nombre VARCHAR(255);
   ALTER TABLE clientes ADD COLUMN IF NOT EXISTS contacto2_telefono VARCHAR(100);
+  ALTER TABLE clientes ADD COLUMN IF NOT EXISTS origen_formulario BOOLEAN DEFAULT false;
+  ALTER TABLE clientes ADD COLUMN IF NOT EXISTS revisado BOOLEAN DEFAULT true;
+  ALTER TABLE clientes ADD COLUMN IF NOT EXISTS fecha_formulario TIMESTAMP;
   CREATE TABLE IF NOT EXISTS reserva_combo_items (
     id SERIAL PRIMARY KEY,
     reserva_id UUID REFERENCES reservas(id) ON DELETE CASCADE,

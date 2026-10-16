@@ -549,6 +549,167 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
+// Obtener datos públicos del contrato para que el cliente lo vea y confirme desde su enlace
+router.get('/contrato-publico/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const reservaRes = await db.query(`
+      SELECT r.*,
+             COALESCE(
+               json_agg(
+                 json_build_object(
+                   'mueble_id', ri.mueble_id,
+                   'combo_id', ri.combo_id,
+                   'nombre', COALESCE(ri.nombre, m.nombre, c.nombre),
+                   'mueble', COALESCE(ri.nombre, m.nombre, c.nombre),
+                   'cantidad', ri.cantidad,
+                   'subtotal', ri.subtotal,
+                   'precio_unitario', ri.precio_unitario,
+                   'componentes', (
+                     SELECT COALESCE(json_agg(
+                       json_build_object(
+                         'mueble_id', rci.mueble_id,
+                         'nombre', m2.nombre,
+                         'cantidad', rci.cantidad
+                       )
+                     ), '[]'::json)
+                     FROM reserva_combo_items rci
+                     JOIN muebles m2 ON m2.id = rci.mueble_id
+                     WHERE rci.reserva_id = r.id AND rci.combo_id = ri.combo_id
+                   )
+                 )
+               ) FILTER (WHERE ri.id IS NOT NULL), '[]'::json
+             ) AS items
+      FROM reservas r
+      LEFT JOIN reserva_items ri ON ri.reserva_id = r.id
+      LEFT JOIN muebles m ON m.id = ri.mueble_id
+      LEFT JOIN combos c ON c.id = ri.combo_id
+      WHERE r.id = $1
+      GROUP BY r.id
+    `, [id]);
+
+    if (!reservaRes.rows.length) {
+      return res.status(404).json({ error: 'Contrato / Reserva no encontrada' });
+    }
+
+    const reserva = reservaRes.rows[0];
+
+    // Si algún combo no tenía componentes en reserva_combo_items, buscar los componentes base del combo
+    if (Array.isArray(reserva.items)) {
+      for (const item of reserva.items) {
+        if (item.combo_id && (!item.componentes || item.componentes.length === 0)) {
+          const compRes = await db.query(
+            `SELECT ci.mueble_id, ci.cantidad, m.nombre
+             FROM combo_items ci
+             JOIN muebles m ON m.id = ci.mueble_id
+             WHERE ci.combo_id = $1`,
+            [item.combo_id]
+          );
+          item.componentes = compRes.rows;
+        }
+      }
+    }
+
+    const [pagosRes, configRes] = await Promise.all([
+      db.query('SELECT id, monto, metodo, notas, creado_en FROM pagos WHERE reserva_id = $1 ORDER BY creado_en ASC', [id]),
+      db.query('SELECT clave, valor FROM configuracion')
+    ]);
+
+    const config = {};
+    configRes.rows.forEach(row => {
+      const val = row.valor;
+      if (typeof val === 'string' && (val.startsWith('[') || val.startsWith('{'))) {
+        try {
+          config[row.clave] = JSON.parse(val);
+        } catch (e) {
+          config[row.clave] = val;
+        }
+      } else {
+        config[row.clave] = val;
+      }
+    });
+
+    res.json({
+      reserva,
+      items: reserva.items || [],
+      pagos: pagosRes.rows || [],
+      terminos: config.terminos_contrato || '',
+      config
+    });
+  } catch (err) {
+    console.error('Error al obtener contrato público:', err);
+    res.status(500).json({ error: 'No se pudo cargar el contrato' });
+  }
+});
+
+// Confirmar contrato por parte del cliente (enlace público)
+router.post('/contrato-publico/:id/confirmar', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const check = await db.query('SELECT id, estado, contrato_confirmado FROM reservas WHERE id = $1', [id]);
+    if (!check.rows.length) {
+      return res.status(404).json({ error: 'Reserva no encontrada' });
+    }
+
+    const estadoActual = check.rows[0].estado;
+    const nuevoEstado = estadoActual === 'pendiente' ? 'confirmada' : estadoActual;
+
+    const result = await db.query(
+      `UPDATE reservas 
+       SET contrato_confirmado = true, 
+           contrato_confirmado_en = COALESCE(contrato_confirmado_en, CURRENT_TIMESTAMP),
+           estado = $1
+       WHERE id = $2 
+       RETURNING *`,
+      [nuevoEstado, id]
+    );
+
+    res.json({
+      ok: true,
+      mensaje: '¡Contrato confirmado exitosamente!',
+      reserva: result.rows[0]
+    });
+  } catch (err) {
+    console.error('Error al confirmar contrato público:', err);
+    res.status(500).json({ error: 'Error al registrar la confirmación del contrato' });
+  }
+});
+
+// Actualizar estado de confirmación del contrato o abono extra del contrato (solo admin)
+router.patch('/:id/confirmacion-contrato', admin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { contrato_confirmado, contrato_abono_extra } = req.body;
+
+    const check = await db.query('SELECT * FROM reservas WHERE id = $1', [id]);
+    if (!check.rows.length) {
+      return res.status(404).json({ error: 'Reserva no encontrada' });
+    }
+
+    const prev = check.rows[0];
+    const nuevoConfirmado = contrato_confirmado !== undefined ? Boolean(contrato_confirmado) : Boolean(prev.contrato_confirmado);
+    const nuevoAbonoExtra = contrato_abono_extra !== undefined ? (parseFloat(contrato_abono_extra) || 0) : (parseFloat(prev.contrato_abono_extra) || 0);
+
+    const result = await db.query(
+      `UPDATE reservas 
+       SET contrato_confirmado = $1,
+           contrato_confirmado_en = CASE 
+             WHEN $1 = true AND contrato_confirmado_en IS NULL THEN CURRENT_TIMESTAMP 
+             WHEN $1 = false THEN NULL 
+             ELSE contrato_confirmado_en 
+           END,
+           contrato_abono_extra = $2
+       WHERE id = $3 
+       RETURNING *`,
+      [nuevoConfirmado, nuevoAbonoExtra, id]
+    );
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Cambiar estado de reserva (solo admin)
 router.patch('/:id/estado', admin, async (req, res) => {
   const client = await db.connect();
