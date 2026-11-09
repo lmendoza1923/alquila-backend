@@ -140,6 +140,10 @@ async function procesarYActualizarItemsReserva(client, reservaId, items, reqTota
     }
   }
 
+  if (!itemsProcesados.length) {
+    throw new Error('La reserva debe contener al menos un artículo o servicio válido');
+  }
+
   // 4. Registrar nuevos items en base de datos
   for (const item of itemsProcesados) {
     await client.query(
