@@ -36,11 +36,6 @@ async function enviarConfirmacion(reserva, items) {
   });
 }
 
-// Ayudante de compatibilidad: el inventario ahora se calcula dinámicamente por calendario
-async function actualizarStockItem(client, item, accion) {
-  return;
-}
-
 // Procesar y actualizar items de una reserva dentro de una transacción activa
 async function procesarYActualizarItemsReserva(client, reservaId, items, reqTotal, fechaInicio, fechaFin, esVigenteNuevo) {
   if (!items || !items.length) {
@@ -229,13 +224,6 @@ async function autoCompletarReservasExpiradas() {
         try {
           await client.query('BEGIN');
           await client.query("UPDATE reservas SET estado = 'completada' WHERE id = $1", [r.id]);
-          const itemsRes = await client.query(
-            "SELECT * FROM reserva_items WHERE reserva_id = $1", 
-            [r.id]
-          );
-          for (const item of itemsRes.rows) {
-            await actualizarStockItem(client, { ...item, reserva_id: r.id }, 'sumar');
-          }
           await client.query('COMMIT');
           console.log(`[Auto-completar] Reserva ${r.id} completada automáticamente (fecha vencida).`);
         } catch (err) {
@@ -735,18 +723,6 @@ router.patch('/:id/estado', admin, async (req, res) => {
 
     const result = await client.query('UPDATE reservas SET estado=$1 WHERE id=$2 RETURNING *', [estado, req.params.id]);
     const reservaActualizada = result.rows[0];
-
-    const vigenteAnterior = ['pendiente', 'confirmada', 'activa'].includes(estadoAnterior);
-    const vigenteNuevo = ['pendiente', 'confirmada', 'activa'].includes(estado);
-
-    if (vigenteAnterior !== vigenteNuevo) {
-      const itemsRes = await client.query('SELECT * FROM reserva_items WHERE reserva_id = $1', [req.params.id]);
-      
-      for (const item of itemsRes.rows) {
-        const accion = (vigenteAnterior && !vigenteNuevo) ? 'sumar' : 'restar';
-        await actualizarStockItem(client, { ...item, reserva_id: req.params.id }, accion);
-      }
-    }
 
     if (estado === 'completada') {
       const fechaFinStr = reservaActualizada.fecha_fin ? (typeof reservaActualizada.fecha_fin === 'string' ? reservaActualizada.fecha_fin.substring(0, 10) : reservaActualizada.fecha_fin.toISOString().substring(0, 10)) : null;

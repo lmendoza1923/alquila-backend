@@ -21,7 +21,9 @@ router.get('/auth-url', auth, admin, async (req, res) => {
 // 2. Callback de Google OAuth2 (Google redirige aquí tras conceder permisos)
 router.get('/callback', async (req, res) => {
   const { code, error } = req.query;
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const host = req.get('host');
+  const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+  const frontendUrl = process.env.FRONTEND_URL || `${protocol}://${host}`;
 
   if (error) {
     console.error('Error en callback de Google:', error);
@@ -33,8 +35,6 @@ router.get('/callback', async (req, res) => {
   }
 
   try {
-    const host = req.get('host');
-    const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
     const defaultCallback = `${protocol}://${host}/api/google-calendar/callback`;
     const redirectUri = process.env.GOOGLE_REDIRECT_URI || defaultCallback;
 
