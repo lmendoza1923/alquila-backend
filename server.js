@@ -22,11 +22,15 @@ app.use('/api/configuracion',   require('./routes/configuracion'));
 app.use('/api/google-calendar', require('./routes/googleCalendar'));
 app.use('/api/clientes',        require('./routes/clientes'));
 app.use('/api/sucursales',      require('./routes/sucursales'));
+app.use('/api/deploy',          require('./routes/deploy'));
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 // Servir frontend estático en producción si existe la carpeta de compilación
-const clientBuildPath = process.env.CLIENT_BUILD_PATH || path.join(__dirname, '../frontend/build');
+const clientBuildPath = process.env.CLIENT_BUILD_PATH || 
+  (fs.existsSync(path.join(__dirname, '../alquila-frontend/build')) 
+    ? path.join(__dirname, '../alquila-frontend/build') 
+    : path.join(__dirname, '../frontend/build'));
 if (fs.existsSync(clientBuildPath)) {
   console.log(`[Frontend] Sirviendo archivos estáticos desde: ${clientBuildPath}`);
   app.use(express.static(clientBuildPath));
