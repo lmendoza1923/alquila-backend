@@ -1,4 +1,6 @@
 require('dotenv').config();
+const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const app = express();
@@ -22,6 +24,19 @@ app.use('/api/clientes',        require('./routes/clientes'));
 app.use('/api/sucursales',      require('./routes/sucursales'));
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+// Servir frontend estático en producción si existe la carpeta de compilación
+const clientBuildPath = process.env.CLIENT_BUILD_PATH || path.join(__dirname, '../frontend/build');
+if (fs.existsSync(clientBuildPath)) {
+  console.log(`[Frontend] Sirviendo archivos estáticos desde: ${clientBuildPath}`);
+  app.use(express.static(clientBuildPath));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    res.sendFile(path.join(clientBuildPath, 'index.html'));
+  });
+}
 
 const PORT = process.env.PORT || 4000;
 const db = require('./db');
