@@ -464,6 +464,14 @@ router.get('/', auth, async (req, res) => {
       query = `
         SELECT r.*, 
                COALESCE(
+                 (SELECT json_agg(p.* ORDER BY p.creado_en ASC) FROM pagos p WHERE p.reserva_id = r.id),
+                 '[]'::json
+               ) AS pagos,
+               COALESCE(
+                 (SELECT SUM(p.monto) FROM pagos p WHERE p.reserva_id = r.id),
+                 0
+               ) AS total_pagado,
+               COALESCE(
                  json_agg(
                    json_build_object(
                      'mueble_id', ri.mueble_id,
@@ -499,6 +507,14 @@ router.get('/', auth, async (req, res) => {
     } else {
       query = `
         SELECT r.*, 
+               COALESCE(
+                 (SELECT json_agg(p.* ORDER BY p.creado_en ASC) FROM pagos p WHERE p.reserva_id = r.id),
+                 '[]'::json
+               ) AS pagos,
+               COALESCE(
+                 (SELECT SUM(p.monto) FROM pagos p WHERE p.reserva_id = r.id),
+                 0
+               ) AS total_pagado,
                COALESCE(
                  json_agg(
                    json_build_object(
