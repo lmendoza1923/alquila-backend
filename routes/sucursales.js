@@ -51,7 +51,7 @@ router.get('/distribucion/general', admin, async (req, res) => {
       FROM muebles m
       LEFT JOIN categorias c ON c.id = m.categoria_id
       WHERE m.activo = true
-      ORDER BY c.nombre NULLS LAST, m.nombre ASC
+      ORDER BY m.nombre ASC
     `);
 
     // 3. Obtener todas las asignaciones existentes
@@ -159,7 +159,7 @@ router.get('/:id', admin, async (req, res) => {
       LEFT JOIN categorias c ON c.id = m.categoria_id
       LEFT JOIN sucursal_mobiliario sm ON sm.mueble_id = m.id AND sm.sucursal_id = $1
       WHERE m.activo = true
-      ORDER BY sm.cantidad DESC NULLS LAST, m.nombre ASC
+      ORDER BY m.nombre ASC
     `;
     const resMobiliario = await db.query(queryMobiliario, [id]);
 
