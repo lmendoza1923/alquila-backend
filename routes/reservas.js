@@ -51,7 +51,15 @@ async function procesarYActualizarItemsReserva(client, reservaId, items, reqTota
     await validarDisponibilidadItems(client, items, fechaInicio, fechaFin, reservaId);
   }
 
-  // 3. Procesar nuevos items
+  // 3. Procesar nuevos items (Prioridad a los combos: siempre primero, mobiliario individual por debajo)
+  items.sort((a, b) => {
+    const aEsCombo = !!a.combo_id;
+    const bEsCombo = !!b.combo_id;
+    if (aEsCombo && !bEsCombo) return -1;
+    if (!aEsCombo && bEsCombo) return 1;
+    return 0;
+  });
+
   const dias = Math.ceil((new Date(fechaFin) - new Date(fechaInicio)) / 86400000) + 1;
   let nuevoTotal = 0;
   const itemsProcesados = [];
@@ -285,6 +293,15 @@ router.post('/', async (req, res) => {
     if (!items || !items.length)
       return res.status(400).json({ error: 'Debe incluir al menos un mueble o combo' });
 
+    // Prioridad: asegurar que los combos se procesen e inserten primero, mobiliario por debajo
+    items.sort((a, b) => {
+      const aEsCombo = !!a.combo_id;
+      const bEsCombo = !!b.combo_id;
+      if (aEsCombo && !bEsCombo) return -1;
+      if (!aEsCombo && bEsCombo) return 1;
+      return 0;
+    });
+
     // Validar disponibilidad por rango de fechas
     await validarDisponibilidadItems(client, items, fecha_inicio, fecha_fin, null);
 
@@ -496,7 +513,8 @@ router.get('/', auth, async (req, res) => {
                        WHERE rci.reserva_id = r.id AND rci.combo_id = ri.combo_id
                      )
                    )
-                 ) FILTER (WHERE ri.id IS NOT NULL), '[]'
+                   ORDER BY (ri.combo_id IS NOT NULL) DESC, ri.id ASC
+                  ) FILTER (WHERE ri.id IS NOT NULL), '[]'
                ) AS items
         FROM reservas r 
         LEFT JOIN reserva_items ri ON ri.reserva_id = r.id 
@@ -540,7 +558,8 @@ router.get('/', auth, async (req, res) => {
                        WHERE rci.reserva_id = r.id AND rci.combo_id = ri.combo_id
                      )
                    )
-                 ) FILTER (WHERE ri.id IS NOT NULL), '[]'
+                   ORDER BY (ri.combo_id IS NOT NULL) DESC, ri.id ASC
+                  ) FILTER (WHERE ri.id IS NOT NULL), '[]'
                ) AS items
         FROM reservas r 
         LEFT JOIN reserva_items ri ON ri.reserva_id = r.id 
@@ -588,7 +607,8 @@ router.get('/contrato-publico/:id', async (req, res) => {
                      WHERE rci.reserva_id = r.id AND rci.combo_id = ri.combo_id
                    )
                  )
-               ) FILTER (WHERE ri.id IS NOT NULL), '[]'::json
+                 ORDER BY (ri.combo_id IS NOT NULL) DESC, ri.id ASC
+                  ) FILTER (WHERE ri.id IS NOT NULL), '[]'::json
              ) AS items
       FROM reservas r
       LEFT JOIN reserva_items ri ON ri.reserva_id = r.id
