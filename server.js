@@ -67,6 +67,7 @@ db.query(`
   ALTER TABLE reservas ADD COLUMN IF NOT EXISTS contrato_confirmado BOOLEAN DEFAULT false;
   ALTER TABLE reservas ADD COLUMN IF NOT EXISTS contrato_confirmado_en TIMESTAMP;
   ALTER TABLE reservas ADD COLUMN IF NOT EXISTS contrato_abono_extra NUMERIC(10,2) DEFAULT 0;
+  ALTER TABLE reservas ADD COLUMN IF NOT EXISTS provincia VARCHAR(100) DEFAULT 'Panamá';
   ALTER TABLE clientes ADD COLUMN IF NOT EXISTS contacto2_nombre VARCHAR(255);
   ALTER TABLE clientes ADD COLUMN IF NOT EXISTS contacto2_telefono VARCHAR(100);
   ALTER TABLE clientes ADD COLUMN IF NOT EXISTS origen_formulario BOOLEAN DEFAULT false;

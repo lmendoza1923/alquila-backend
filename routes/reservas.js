@@ -279,7 +279,7 @@ router.post('/', async (req, res) => {
       fecha_inicio, fecha_fin,
       alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente,
       contacto2_nombre, contacto2_telefono,
-      direccion_entrega, notas, items
+      provincia, direccion_entrega, notas, items
     } = req.body;
 
     if (!items || !items.length)
@@ -409,10 +409,12 @@ router.post('/', async (req, res) => {
       }
     }
 
+    const provLimpia = (provincia && String(provincia).trim()) ? String(provincia).trim() : 'Panamá';
+
     const resReserva = await client.query(
-      `INSERT INTO reservas (fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total, estado, cliente_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente ? cedula_cliente.trim() : null, email_cliente, telefono_cliente, direccion_entrega, notas, total.toFixed(2), 'activa', finalClienteId]
+      `INSERT INTO reservas (fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente, direccion_entrega, notas, total, estado, cliente_id, provincia)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+      [fecha_inicio, fecha_fin, alias_cliente, nombre_cliente, cedula_cliente ? cedula_cliente.trim() : null, email_cliente, telefono_cliente, direccion_entrega, notas, total.toFixed(2), 'activa', finalClienteId, provLimpia]
     );
     const reserva = resReserva.rows[0];
 
@@ -773,7 +775,7 @@ router.put('/:id', admin, async (req, res) => {
     const {
       fecha_inicio, fecha_fin,
       alias_cliente, nombre_cliente, cedula_cliente, email_cliente, telefono_cliente,
-      direccion_entrega, notas, estado, total, items, cliente_id
+      provincia, direccion_entrega, notas, estado, total, items, cliente_id
     } = req.body;
 
     const estados = ['pendiente','confirmada','activa','completada','cancelada'];
@@ -813,12 +815,16 @@ router.put('/:id', admin, async (req, res) => {
       itemsFinalesParaCalendario = resultadoItems.itemsProcesados;
     }
 
+    const provActualizada = provincia !== undefined 
+      ? ((provincia && String(provincia).trim()) ? String(provincia).trim() : 'Panamá')
+      : (reservaPrevia.provincia || 'Panamá');
+
     const result = await client.query(
       `UPDATE reservas 
        SET fecha_inicio=$1, fecha_fin=$2, alias_cliente=$3, nombre_cliente=$4, cedula_cliente=$5, email_cliente=$6, 
            telefono_cliente=$7, direccion_entrega=$8, notas=$9, estado=$10, total=COALESCE($11, total),
-           cliente_id=COALESCE($12, cliente_id)
-       WHERE id=$13 RETURNING *`,
+           cliente_id=COALESCE($12, cliente_id), provincia=COALESCE($13, provincia, 'Panamá')
+       WHERE id=$14 RETURNING *`,
       [
         fInicio,
         fFin,
@@ -832,6 +838,7 @@ router.put('/:id', admin, async (req, res) => {
         nuevoEstado,
         (total !== undefined && total !== null && !isNaN(total)) ? parseFloat(total) : null,
         cliente_id !== undefined ? cliente_id : null,
+        provActualizada,
         req.params.id
       ]
     );
